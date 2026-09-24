@@ -1969,6 +1969,11 @@ def content_window_start(selected_at, total, room, card_starts):
             card = start
         else:
             break
+    # Keep the first provider card anchored below the fixed shortcut header.
+    # On narrow screens its selected action can be near the bottom of the card;
+    # scrolling into that row would otherwise hide the Cursor card title.
+    if card_starts and card == card_starts[0]:
+        return 0
     max_start = total - room
     start = card
     if selected_at >= start + room:
@@ -2040,22 +2045,19 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             parsed = parse_iso(meter.get("resetsAt")) if meter.get("resetsAt") else None
             reset = parsed.astimezone().strftime("%m/%d %H:%M") if parsed else " " * 11
             if compact:
-                lines.append(row([(f"  {label}  ", label_tone, False), (value, tone, True)], border))
-                if parsed and inner >= 28:
-                    graph_width = max(3, inner - 14)
-                    graph = bar(percent, graph_width) if percent is not None else "·" * graph_width
-                    lines.append(
-                        row(
-                            [("  " + graph, tone, False), (" " + reset, ACCENT if not muted else DIM, False)],
-                            border,
-                        )
-                    )
-                else:
-                    graph_width = max(3, inner - 2)
-                    graph = bar(percent, graph_width) if percent is not None else "·" * graph_width
-                    lines.append(row(plain_segments("  " + graph, tone), border))
-                    if parsed and height >= 30:
-                        lines.append(row(plain_segments("  " + reset, DIM if muted else ACCENT), border))
+                label_text = f"  {label}  "
+                include_reset = bool(parsed and inner >= 28)
+                reset_width = display_width(reset) + 1 if include_reset else 0
+                graph_width = max(1, min(12, inner - display_width(label_text) - display_width(value) - reset_width - 1))
+                graph = bar(percent, graph_width) if percent is not None else "·" * graph_width
+                segments = [
+                    (label_text, label_tone, False),
+                    (value, tone, True),
+                    (" " + graph, tone, False),
+                ]
+                if include_reset:
+                    segments.append((" " + reset, ACCENT if not muted else DIM, False))
+                lines.append(row(segments, border))
             else:
                 graph = bar(percent, meter_bar) if percent is not None else "·" * meter_bar
                 label_text = "  " + pad_width(label, 6) + "  "
