@@ -1,0 +1,43 @@
+id = "ai-usage"
+name = "AI Usage"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Cursor, ChatGPT, Claude 남은 사용량을 사이드바와 대시보드에 표시합니다."
+platforms = ["windows"]
+
+[[panes]]
+id = "statusbar"
+title = "AI Usage"
+placement = "split"
+command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-windows.ps1", "statusbar"]
+
+[[panes]]
+id = "dashboard"
+title = "AI Usage"
+placement = "popup"
+width = "80%"
+height = 32
+command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-windows.ps1", "dashboard"]
+
+[[actions]]
+id = "open"
+title = "AI 사용량 열기"
+command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-windows.ps1", "open"]
+
+[[actions]]
+id = "status"
+title = "AI 사용량 한 줄"
+command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-windows.ps1", "status"]
+
+[[actions]]
+id = "refresh"
+title = "AI 사용량 새로고침"
+command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-windows.ps1", "refresh"]
+
+[[actions]]
+id = "watch-start"
+title = "AI 사용량 감시 시작"
+command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-windows.ps1", "watch-start"]
+
+[[startup]]
+command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-windows.ps1", "watch-start"]

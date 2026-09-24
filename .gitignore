@@ -1,0 +1,6 @@
+.build/
+bin/
+.state/
+.DS_Store
+__pycache__/
+*.py[cod]
