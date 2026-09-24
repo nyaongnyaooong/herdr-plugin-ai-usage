@@ -1977,7 +1977,7 @@ def content_window_start(selected_at, total, room, card_starts):
 
 
 def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, width, height, expanded):
-    width = max(width, 24)
+    width = max(width, 18)
     inner = width - 2
     compact = inner < 38
     meter_bar = max(4, min(18, inner - 5 if compact else inner - 30))
@@ -2001,7 +2001,11 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
         return frame_line("│", segments, "│", border, inner, background)
 
     current = next((item for item in items if item["key"] == selected_key), None)
-    if current and current["kind"] == "account":
+    if inner < 24 and current and current["kind"] == "account":
+        shortcuts = ["↑↓ 이동", "Enter · d · q"]
+    elif inner < 24:
+        shortcuts = ["↑↓ 이동", "Enter · r · q"]
+    elif current and current["kind"] == "account":
         shortcuts = ["↑↓ 이동 · Enter 적용", "d 삭제 · q 닫기"] if inner < 48 else ["  ↑↓ 이동    Enter 적용    d 세션 제거    q 닫기"]
     else:
         shortcuts = ["↑↓ 이동 · Enter 실행", "r 갱신 · q 닫기"] if inner < 48 else ["  ↑↓ 이동    Enter 실행    r 새로고침    q 닫기"]
