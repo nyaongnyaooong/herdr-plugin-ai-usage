@@ -1984,7 +1984,10 @@ def content_window_start(selected_at, total, room, card_starts):
 def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, width, height, expanded):
     width = max(width, 18)
     inner = width - 2
-    compact = inner < 38
+    # Fit the three provider summaries and the pinned shortcut guide in a
+    # phone-sized popup; session details expand back to the navigable layout.
+    dense_overview = 19 <= height <= 22 and not expanded
+    compact = inner < 48 or dense_overview
     meter_bar = max(4, min(18, inner - 5 if compact else inner - 30))
     stamp = parse_iso((snapshot or {}).get("fetchedAt"))
     clock = stamp.astimezone().strftime("%H:%M:%S") if stamp else "--:--:--"
@@ -2006,7 +2009,9 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
         return frame_line("│", segments, "│", border, inner, background)
 
     current = next((item for item in items if item["key"] == selected_key), None)
-    if inner < 24 and current and current["kind"] == "account":
+    if dense_overview and inner >= 32:
+        shortcuts = ["↑↓ 이동 · Enter 실행   r 갱신   q 닫기"]
+    elif inner < 24 and current and current["kind"] == "account":
         shortcuts = ["↑↓ 이동", "Enter · d · q"]
     elif inner < 24:
         shortcuts = ["↑↓ 이동", "Enter · r · q"]
@@ -2020,7 +2025,7 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
         *[row(plain_segments(exact_width(shortcut, inner), MUTED), header_border) for shortcut in shortcuts],
         edge("╰", header_border),
     ]
-    lines = [""]
+    lines = [] if dense_overview else [""]
     selected_at = 0
     card_starts = []
 
@@ -2030,11 +2035,15 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
         shown = provider_id in visible
         border = meta["color"] if shown else DIM
         badge = "표시" if shown else "숨김"
+        if dense_overview and provider.get("status") != "ok":
+            badge = {"missingAuth": "로그인", "rateLimited": "제한", "unavailable": "확인"}.get(
+                provider.get("status"), "확인"
+            )
         card_starts.append(len(lines))
         lines.append(banner(meta["name"], badge, border))
         muted = not shown
         detail = [part for part in (provider.get("accountLabel"), provider.get("planName")) if part]
-        if detail:
+        if detail and not dense_overview:
             lines.append(row(plain_segments(exact_width("  " + " · ".join(detail), inner), DIM if muted else MUTED), border))
         for side, label in (("left", meta["left"]), ("right", meta["right"])):
             meter = provider.get(side) or {}
@@ -2075,7 +2084,7 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
                         border,
                     )
                 )
-        if provider.get("statusMessage"):
+        if provider.get("statusMessage") and not dense_overview:
             tone = MUTED if provider.get("status") == "ok" else CRITICAL
             lines.append(row(plain_segments(exact_width("  " + provider["statusMessage"], inner), tone), border))
         saved = [item for item in accounts if item.get("provider") == provider_id]
@@ -2089,29 +2098,51 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             ("logout", "로그아웃" if compact else "현재 세션 파일 제거", True),
             ("sessions", session_label, False),
         ]
-        for kind, label, danger in actions:
-            key = (kind, provider_id)
-            selected = key == selected_key
-            if selected:
-                selected_at = len(lines)
-            mark = "▸ " if selected else "  "
-            hint = ("↵" if compact else "Enter") if selected else ""
-            label_text = mark + label
-            room = max(1, inner - 3 - display_width(hint))
-            text = " " + clip_text(label_text, room)
-            gap = max(1, inner - 1 - display_width(text) - display_width(hint))
-            lines.append(
-                row(
-                    [
-                        (text, CRITICAL if selected and danger else TEXT if selected else MUTED, selected),
-                        (" " * gap, TEXT, False),
-                        (hint, CRITICAL if selected and danger else ACCENT if selected else DIM, False),
-                        (" ", TEXT, False),
-                    ],
-                    border,
-                    SELECT_BG if selected else None,
+        if dense_overview:
+            action_labels = {
+                "toggle": ("숨기기" if shown else "표시하기") if inner >= 24 else "표시",
+                "save": "저장" if inner >= 24 else "저장",
+                "logout": "로그아웃" if inner >= 24 else "삭제",
+                "sessions": f"계정 {len(saved)}" if saved and inner >= 24 else "계정",
+            }
+            action_segments = []
+            row_selected = False
+            for index, (kind, _, danger) in enumerate(actions):
+                key = (kind, provider_id)
+                selected = key == selected_key
+                if selected:
+                    selected_at = len(lines)
+                    row_selected = True
+                if index:
+                    action_segments.append((" ", DIM, False))
+                mark = "▸" if selected else ""
+                tone = CRITICAL if selected and danger else ACCENT if selected else MUTED
+                action_segments.append((mark + action_labels[kind], tone, selected))
+            lines.append(row(action_segments, border, SELECT_BG if row_selected else None))
+        else:
+            for kind, label, danger in actions:
+                key = (kind, provider_id)
+                selected = key == selected_key
+                if selected:
+                    selected_at = len(lines)
+                mark = "▸ " if selected else "  "
+                hint = ("↵" if compact else "Enter") if selected else ""
+                label_text = mark + label
+                room = max(1, inner - 3 - display_width(hint))
+                text = " " + clip_text(label_text, room)
+                gap = max(1, inner - 1 - display_width(text) - display_width(hint))
+                lines.append(
+                    row(
+                        [
+                            (text, CRITICAL if selected and danger else TEXT if selected else MUTED, selected),
+                            (" " * gap, TEXT, False),
+                            (hint, CRITICAL if selected and danger else ACCENT if selected else DIM, False),
+                            (" ", TEXT, False),
+                        ],
+                        border,
+                        SELECT_BG if selected else None,
+                    )
                 )
-            )
         if opened:
             caption = " 저장한 세션 "
             fill = max(0, inner - 2 - display_width(caption))
@@ -2157,12 +2188,16 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
                 )
             )
         lines.append(edge("╰", border))
-        lines.append("")
+        if not dense_overview:
+            lines.append("")
 
     notice_lines = []
     if notice:
         tone = CRITICAL if error else ACCENT
-        notice_lines = ["", banner(notice, "", tone), edge("╰", tone)]
+        if dense_overview:
+            notice_lines = [row(plain_segments(" " + clip_text(notice, max(1, inner - 1)), tone), tone)]
+        else:
+            notice_lines = ["", banner(notice, "", tone), edge("╰", tone)]
     room = max(1, height - len(header) - len(notice_lines))
     if len(lines) > room:
         start = content_window_start(selected_at, len(lines), room, card_starts)
@@ -2389,9 +2424,7 @@ DASHBOARD_ROW = 1
 
 def dashboard_screen():
     columns, lines = raw_terminal_size()
-    if lines > POPUP_ROWS:
-        return columns, POPUP_ROWS, lines - POPUP_ROWS + 1
-    return columns, max(lines, 1), 1
+    return columns, min(max(lines, 1), POPUP_ROWS), 1
 
 
 def draw_dashboard(frame):
