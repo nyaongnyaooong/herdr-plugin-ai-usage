@@ -250,45 +250,83 @@ def cursor_db_path():
     return os.path.join(root, "Cursor", "User", "globalStorage", "state.vscdb")
 
 
+def cursor_cli_auth_path():
+    if os.name == "nt":
+        return None
+    root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home(), ".config")
+    return os.path.join(root, "cursor", "auth.json")
+
+
+def read_cursor_cli_session():
+    path = cursor_cli_auth_path()
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return READ_FAILED
+    if not isinstance(payload, dict):
+        return READ_FAILED
+    token = payload.get("accessToken") or payload.get("access_token")
+    if not isinstance(token, str) or not token.strip():
+        return None
+    refresh = payload.get("refreshToken") or payload.get("refresh_token")
+    email = payload.get("email") or payload.get("userEmail")
+    return {
+        "accessToken": token.strip(),
+        "refreshToken": refresh.strip() if isinstance(refresh, str) else None,
+        "email": email.strip() if isinstance(email, str) else None,
+    }
+
+
 def read_cursor_session():
     path = cursor_db_path()
-    if not os.path.exists(path):
-        return None
-    uri = "file:" + path.replace("\\", "/") + "?mode=ro"
-    try:
-        conn = sqlite3.connect(uri, uri=True, timeout=2)
-    except sqlite3.Error:
+    database_failed = False
+    if os.path.exists(path):
+        uri = "file:" + path.replace("\\", "/") + "?mode=ro"
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=2)
+        except sqlite3.Error:
+            database_failed = True
+        else:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT key, value FROM ItemTable WHERE key IN (
+                        'cursorAuth/accessToken',
+                        'cursorAuth/refreshToken',
+                        'cursorAuth/cachedEmail'
+                    )
+                    """
+                ).fetchall()
+            except sqlite3.Error:
+                database_failed = True
+                rows = []
+            finally:
+                conn.close()
+            token = None
+            refresh = None
+            email = None
+            for key, value in rows:
+                if isinstance(value, bytes):
+                    value = value.decode("utf-8", "replace")
+                text = (value or "").strip()
+                if key == "cursorAuth/accessToken":
+                    token = text or None
+                elif key == "cursorAuth/refreshToken":
+                    refresh = text or None
+                elif key == "cursorAuth/cachedEmail":
+                    email = text or None
+            if token:
+                return {"accessToken": token, "refreshToken": refresh, "email": email}
+
+    cli_session = read_cursor_cli_session()
+    if cli_session is not None and cli_session is not READ_FAILED:
+        return cli_session
+    if database_failed or cli_session is READ_FAILED:
         return READ_FAILED
-    try:
-        rows = conn.execute(
-            """
-            SELECT key, value FROM ItemTable WHERE key IN (
-                'cursorAuth/accessToken',
-                'cursorAuth/refreshToken',
-                'cursorAuth/cachedEmail'
-            )
-            """
-        ).fetchall()
-    except sqlite3.Error:
-        return READ_FAILED
-    finally:
-        conn.close()
-    token = None
-    refresh = None
-    email = None
-    for key, value in rows:
-        if isinstance(value, bytes):
-            value = value.decode("utf-8", "replace")
-        text = (value or "").strip()
-        if key == "cursorAuth/accessToken":
-            token = text or None
-        elif key == "cursorAuth/refreshToken":
-            refresh = text or None
-        elif key == "cursorAuth/cachedEmail":
-            email = text or None
-    if not token:
-        return None
-    return {"accessToken": token, "refreshToken": refresh, "email": email}
+    return None
 
 
 def codex_auth_path():

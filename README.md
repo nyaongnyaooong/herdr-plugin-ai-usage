@@ -11,7 +11,7 @@ herdr server reload-config
 
 Windows needs Python 3.9 or newer. Linux needs Python 3 and a POSIX shell. Herdr starts the usage watcher at startup.
 
-Data is stored under `%APPDATA%\AIUsage` on Windows and `${XDG_DATA_HOME:-~/.local/share}/AIUsage` on Linux. Cursor authentication is read from `%APPDATA%\Cursor\User\globalStorage\state.vscdb` on Windows or `${XDG_CONFIG_HOME:-~/.config}/Cursor/User/globalStorage/state.vscdb` on Linux. Codex and Claude use their standard files under `~/.codex` and `~/.claude`.
+Data is stored under `%APPDATA%\AIUsage` on Windows and `${XDG_DATA_HOME:-~/.local/share}/AIUsage` on Linux. Cursor authentication is read from `%APPDATA%\Cursor\User\globalStorage\state.vscdb` on Windows or `${XDG_CONFIG_HOME:-~/.config}/Cursor/User/globalStorage/state.vscdb` on Linux. On Linux, if the Cursor editor session is unavailable, the plugin also reads the Cursor Agent CLI session from `${XDG_CONFIG_HOME:-~/.config}/cursor/auth.json`. Codex and Claude use their standard files under `~/.codex` and `~/.claude`.
 
 ## Linux keybinding
 
