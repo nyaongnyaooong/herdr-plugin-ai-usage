@@ -1206,31 +1206,89 @@ def connected(provider):
     return True
 
 
-def statusbar_frame(snapshot):
-    rows = []
+def statusbar_frame(snapshot, columns=80, row_limit=24):
+    providers = []
     visible = load_visible() or list(ORDER)
     for provider_id in visible:
         provider = provider_of(snapshot, provider_id)
         if not connected(provider):
             continue
         meta = BY_ID[provider_id]
-        fields = []
+        meters = []
         for side, label in (("left", meta["menu_left"]), ("right", meta["menu_right"])):
             percent = provider.get(side, {}).get("remainingPercent")
             if percent is None:
                 continue
-            color = level_color(percent)
             reset = provider.get(side, {}).get("resetsAt")
-            text = f"{fg(pad(label, 8), (224, 222, 244))}  {fg(pad(str(percent) + '%', 10), color, True)} {fg(bar(percent), color)}"
-            if reset:
-                parsed = parse_iso(reset)
-                if parsed:
-                    text += " " + fg("reset " + parsed.astimezone().strftime("%m/%d %H:%M"), (246, 193, 119))
-            fields.append(text)
-        if not fields and provider.get("api"):
-            fields.append(fg(provider["api"].get("detail", ""), (156, 207, 142), True))
+            meters.append((side, label, percent, reset))
+        api = provider.get("api")
+        if meters or api:
+            providers.append((provider_id, meta, meters, api))
+
+    if not providers:
+        return ""
+
+    # A short pane can be only a few dozen columns wide. Keep one provider per
+    # row when possible, then fold rows together only when the pane is too short.
+    short_names = {"cursor": "C", "chatgpt": "G", "claude": "L"}
+    short_labels = {"cursor": ("A", "O"), "chatgpt": ("5h", "W"), "claude": ("5h", "W")}
+
+    def summary(provider_id, meters, api, show_percent):
+        if meters:
+            suffix = "%" if show_percent else ""
+            values = [f"{meter_percent}{suffix}" for _, _, meter_percent, _ in meters]
+            if len(values) == 2:
+                return f"{short_names[provider_id]} " + "/".join(values)
+            side, _, percent, _ = meters[0]
+            label = short_labels[provider_id][0 if side == "left" else 1]
+            return f"{short_names[provider_id]} {label}{percent}{suffix}"
+        detail = api.get("detail", "") if api else ""
+        return f"{short_names[provider_id]} {detail}".rstrip()
+
+    if columns < 40 or row_limit < len(providers):
+        show_percent = row_limit >= len(providers)
+        summaries = [summary(provider_id, meters, api, show_percent) for provider_id, _, meters, api in providers]
+        if row_limit < len(summaries):
+            group_size = (len(summaries) + max(row_limit, 1) - 1) // max(row_limit, 1)
+            rows = ["  ".join(summaries[index:index + group_size]) for index in range(0, len(summaries), group_size)]
+        else:
+            rows = summaries
+        return "\n".join(rows)
+
+    if columns >= 122:
+        rows = []
+        for _, meta, meters, api in providers:
+            fields = []
+            for _, label, percent, reset in meters:
+                color = level_color(percent)
+                text = f"{fg(pad(label, 8), (224, 222, 244))}  {fg(pad(str(percent) + '%', 10), color, True)} {fg(bar(percent), color)}"
+                if reset:
+                    parsed = parse_iso(reset)
+                    if parsed:
+                        text += " " + fg("reset " + parsed.astimezone().strftime("%m/%d %H:%M"), (246, 193, 119))
+                fields.append(text)
+            if not fields and api:
+                fields.append(fg(api.get("detail", ""), (156, 207, 142), True))
+            if fields:
+                rows.append(" " + fg(pad(meta["name"], 8), meta["color"], True) + "  " + "   ".join(fields))
+        return "\n".join(rows)
+
+    rows = []
+    bar_width = max(3, min(6, (columns - 34) // 2))
+    for provider_id, meta, meters, api in providers:
+        fields = []
+        labels = short_labels[provider_id]
+        for side, _, percent, _ in meters:
+            label = labels[0 if side == "left" else 1]
+            color = level_color(percent)
+            fields.append(
+                f"{fg(label, (224, 222, 244))} {fg(str(percent) + '%', color, True)} "
+                f"{fg(bar(percent, bar_width), color)}"
+            )
+        if not fields and api:
+            fields.append(fg(api.get("detail", ""), (156, 207, 142), True))
         if fields:
-            rows.append(" " + fg(pad(meta["name"], 8), meta["color"], True) + "  " + "   ".join(fields))
+            rows.append(" " + fg(meta["name"], meta["color"], True) + "  " + " | ".join(fields))
     return "\n".join(rows)
 
 
@@ -1832,8 +1890,16 @@ def paint(text, color, bold=False):
 
 
 def paint_line(segments, width, background=None):
-    body = "".join(paint(text, color, bold) for text, color, bold in segments)
-    used = sum(display_width(text) for text, _, _ in segments)
+    fitted = []
+    used = 0
+    for text, color, bold in segments:
+        remaining = max(0, width - used)
+        if remaining == 0:
+            break
+        text = clip_text(text, remaining)
+        fitted.append((text, color, bold))
+        used += display_width(text)
+    body = "".join(paint(text, color, bold) for text, color, bold in fitted)
     pad = " " * max(0, width - used)
     if background:
         red, green, blue = background
@@ -1911,9 +1977,10 @@ def content_window_start(selected_at, total, room, card_starts):
 
 
 def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, width, height, expanded):
-    width = max(width, 48)
+    width = max(width, 24)
     inner = width - 2
-    meter_bar = max(8, inner - 30)
+    compact = inner < 38
+    meter_bar = max(4, min(18, inner - 5 if compact else inner - 30))
     stamp = parse_iso((snapshot or {}).get("fetchedAt"))
     clock = stamp.astimezone().strftime("%H:%M:%S") if stamp else "--:--:--"
     items = menu_items(accounts, expanded)
@@ -1935,13 +2002,13 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
 
     current = next((item for item in items if item["key"] == selected_key), None)
     if current and current["kind"] == "account":
-        shortcuts = "  ↑↓ 이동    Enter 적용    d 세션 제거    q 닫기"
+        shortcuts = ["↑↓ 이동 · Enter 적용", "d 삭제 · q 닫기"] if inner < 48 else ["  ↑↓ 이동    Enter 적용    d 세션 제거    q 닫기"]
     else:
-        shortcuts = "  ↑↓ 이동    Enter 실행    r 새로고침    q 닫기"
+        shortcuts = ["↑↓ 이동 · Enter 실행", "r 갱신 · q 닫기"] if inner < 48 else ["  ↑↓ 이동    Enter 실행    r 새로고침    q 닫기"]
     header_border = (186, 170, 214)
     header = [
         banner("AI USAGE", clock, header_border),
-        row(plain_segments(exact_width(shortcuts, inner), MUTED), header_border),
+        *[row(plain_segments(exact_width(shortcut, inner), MUTED), header_border) for shortcut in shortcuts],
         edge("╰", header_border),
     ]
     lines = [""]
@@ -1964,38 +2031,56 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             meter = provider.get(side) or {}
             percent = meter.get("remainingPercent")
             value = "—" if percent is None else f"{percent}%"
-            graph = bar(percent, meter_bar) if percent is not None else "·" * meter_bar
             tone = DIM if muted else (MUTED if percent is None else level_color(percent))
             label_tone = DIM if muted else TEXT
             parsed = parse_iso(meter.get("resetsAt")) if meter.get("resetsAt") else None
             reset = parsed.astimezone().strftime("%m/%d %H:%M") if parsed else " " * 11
-            label_text = "  " + pad_width(label, 6) + "  "
-            value_text = pad_width(value, 4, "right") + "  "
-            reset_text = "  " + reset
-            lines.append(
-                row(
-                    [
-                        (label_text, label_tone, False),
-                        (value_text, tone, True),
-                        (graph, tone, False),
-                        (reset_text, DIM if muted or not parsed else ACCENT, False),
-                        (" ", TEXT, False),
-                    ],
-                    border,
+            if compact:
+                lines.append(row([(f"  {label}  ", label_tone, False), (value, tone, True)], border))
+                if parsed and inner >= 28:
+                    graph_width = max(3, inner - 14)
+                    graph = bar(percent, graph_width) if percent is not None else "·" * graph_width
+                    lines.append(
+                        row(
+                            [("  " + graph, tone, False), (" " + reset, ACCENT if not muted else DIM, False)],
+                            border,
+                        )
+                    )
+                else:
+                    graph_width = max(3, inner - 2)
+                    graph = bar(percent, graph_width) if percent is not None else "·" * graph_width
+                    lines.append(row(plain_segments("  " + graph, tone), border))
+                    if parsed and height >= 30:
+                        lines.append(row(plain_segments("  " + reset, DIM if muted else ACCENT), border))
+            else:
+                graph = bar(percent, meter_bar) if percent is not None else "·" * meter_bar
+                label_text = "  " + pad_width(label, 6) + "  "
+                value_text = pad_width(value, 4, "right") + "  "
+                reset_text = "  " + reset
+                lines.append(
+                    row(
+                        [
+                            (label_text, label_tone, False),
+                            (value_text, tone, True),
+                            (graph, tone, False),
+                            (reset_text, DIM if muted or not parsed else ACCENT, False),
+                            (" ", TEXT, False),
+                        ],
+                        border,
+                    )
                 )
-            )
         if provider.get("statusMessage"):
             tone = MUTED if provider.get("status") == "ok" else CRITICAL
             lines.append(row(plain_segments(exact_width("  " + provider["statusMessage"], inner), tone), border))
         saved = [item for item in accounts if item.get("provider") == provider_id]
         opened = provider_id in expanded
-        session_label = "세션 목록 닫기" if opened else "세션 목록 보기"
+        session_label = ("계정 닫기" if compact else "세션 목록 닫기") if opened else ("계정 보기" if compact else "세션 목록 보기")
         if not opened and saved:
-            session_label = f"세션 목록 보기  {len(saved)}개"
+            session_label = f"계정 보기 {len(saved)}개" if compact else f"세션 목록 보기  {len(saved)}개"
         actions = [
-            ("toggle", "상태줄에서 숨기기" if shown else "상태줄에 표시", False),
-            ("save", "현재 세션 저장", False),
-            ("logout", "현재 세션 파일 제거", True),
+            ("toggle", ("표시 전환" if shown else "표시하기") if compact else ("상태줄에서 숨기기" if shown else "상태줄에 표시"), False),
+            ("save", "세션 저장" if compact else "현재 세션 저장", False),
+            ("logout", "로그아웃" if compact else "현재 세션 파일 제거", True),
             ("sessions", session_label, False),
         ]
         for kind, label, danger in actions:
@@ -2004,9 +2089,9 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             if selected:
                 selected_at = len(lines)
             mark = "▸ " if selected else "  "
-            hint = "Enter" if selected else ""
+            hint = ("↵" if compact else "Enter") if selected else ""
             label_text = mark + label
-            room = inner - 3 - display_width(hint)
+            room = max(1, inner - 3 - display_width(hint))
             text = " " + clip_text(label_text, room)
             gap = max(1, inner - 1 - display_width(text) - display_width(hint))
             lines.append(
@@ -2047,10 +2132,10 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
                 hint = "적용 중"
                 mark = "● "
             else:
-                hint = "Enter 적용" if selected else ""
+                hint = ("↵ 적용" if compact else "Enter 적용") if selected else ""
                 mark = "○ "
             prefix = ("▸ " if selected else "  ") + mark
-            room = inner - 3 - display_width(hint)
+            room = max(1, inner - 3 - display_width(hint))
             text = " " + clip_text(prefix + name + plan, max(4, room))
             gap = max(1, inner - 1 - display_width(text) - display_width(hint))
             lines.append(
@@ -2453,7 +2538,7 @@ def statusbar():
     try:
         while True:
             columns, rows = raw_terminal_size()
-            frame = fit_frame(statusbar_frame(load_snapshot()), columns, rows)
+            frame = fit_frame(statusbar_frame(load_snapshot(), columns, rows), columns, rows)
             # Repaint the fixed viewport. A normal-screen newline would scroll a
             # copy of the same row into history, and a scrolled pane shows those copies.
             sys.stdout.write("\x1b[H\x1b[2J" + frame)
