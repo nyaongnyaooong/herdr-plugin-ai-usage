@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Windows runner for the ai-usage Herdr plugin."""
+"""Cross-platform runner for the ai-usage Herdr plugin."""
 
 import base64
 import hashlib
@@ -84,7 +84,9 @@ def home():
 
 
 def data_dir():
-    root = os.environ.get("APPDATA") or home()
+    root = os.environ.get("APPDATA")
+    if not root:
+        root = os.environ.get("XDG_DATA_HOME") or os.path.join(home(), ".local", "share")
     path = os.path.join(root, "AIUsage")
     os.makedirs(path, exist_ok=True)
     return path
@@ -122,7 +124,15 @@ def save_json(path, value):
 
 
 def herdr_bin():
-    return os.environ.get("HERDR_BIN_PATH") or "herdr"
+    configured = os.environ.get("HERDR_BIN_PATH")
+    if configured:
+        return configured
+    found = shutil.which("herdr")
+    if found:
+        return found
+    if os.name != "nt":
+        return os.path.join(home(), ".local", "bin", "herdr")
+    return "herdr"
 
 
 def run_herdr(args):
@@ -233,8 +243,10 @@ def failure(provider_id, status, unauthorized):
 
 
 def cursor_db_path():
-    appdata = os.environ.get("APPDATA") or ""
-    return os.path.join(appdata, "Cursor", "User", "globalStorage", "state.vscdb")
+    root = os.environ.get("APPDATA")
+    if not root:
+        root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home(), ".config")
+    return os.path.join(root, "Cursor", "User", "globalStorage", "state.vscdb")
 
 
 def read_cursor_session():
@@ -1408,9 +1420,9 @@ def foreground_matches(kind, info):
     if kind == "cursor":
         return "cursor-agent" in text
     if kind == "codex":
-        return "codex.exe" in text or "\\codex" in text
+        return re.search(r"(?<![a-z0-9_-])codex(?:\.exe)?(?![a-z0-9_-])", text) is not None
     if kind == "claude":
-        return "claude.exe" in text or "claude" in text.split()
+        return re.search(r"(?<![a-z0-9_-])claude(?:\.exe)?(?![a-z0-9_-])", text) is not None
     return False
 
 
@@ -1428,6 +1440,27 @@ def herdr_foreground_pids(kind):
 
 
 def external_codex_running():
+    hosted = herdr_foreground_pids("codex")
+    if os.name != "nt":
+        try:
+            proc = subprocess.run(
+                ["ps", "-eo", "pid=,args="],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        for line in (proc.stdout or "").splitlines():
+            bits = line.strip().split(None, 1)
+            if len(bits) < 2 or not bits[0].isdigit():
+                continue
+            if re.search(r"(?<![a-z0-9_-])codex(?:\.exe)?(?![a-z0-9_-])", bits[1].lower()):
+                if int(bits[0]) not in hosted:
+                    return True
+        return False
     try:
         proc = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq Codex.exe", "/FO", "CSV", "/NH"],
@@ -1439,7 +1472,6 @@ def external_codex_running():
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    hosted = herdr_foreground_pids("codex")
     for line in (proc.stdout or "").splitlines():
         if "codex.exe" not in line.lower():
             continue
@@ -1561,8 +1593,16 @@ def agent_name(kind, pane_id, taken):
 
 def shell_ready(pane_id):
     info = pane_process(pane_id)
-    text = foreground_text(info)
-    return any(name in text for name in ("powershell", "pwsh", "cmd.exe"))
+    if os.name == "nt":
+        text = foreground_text(info)
+        return any(name in text for name in ("powershell", "pwsh", "cmd.exe"))
+    shells = {"bash", "dash", "fish", "nu", "powershell", "powershell.exe", "pwsh", "pwsh.exe", "sh", "zsh", "cmd.exe"}
+    for proc in info.get("foreground_processes") or []:
+        name = (proc.get("name") or "").strip().lower()
+        command = (proc.get("cmdline") or "").strip().split(None, 1)[0].strip("\"'").lower()
+        if os.path.basename(name) in shells or os.path.basename(command) in shells:
+            return True
+    return False
 
 
 def stop_agent(pane_id, kind):
@@ -2360,7 +2400,12 @@ def socket_path():
     appdata = os.environ.get("APPDATA")
     if appdata:
         return os.path.join(appdata, "herdr", "herdr.sock")
-    return os.path.join(home(), ".config", "herdr", "herdr.sock")
+    root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home(), ".config")
+    return os.path.join(root, "herdr", "herdr.sock")
+
+
+def pane_entrypoint(name):
+    return f"{name}-linux" if sys.platform.startswith("linux") else name
 
 
 def rpc(method, params):
@@ -2535,9 +2580,9 @@ def ensure(all_workspaces=False, repair_ratio=True):
                 "pane",
                 "open",
                 "--plugin",
-                "ai-usage",
+                os.environ.get("HERDR_PLUGIN_ID") or "ai-usage",
                 "--entrypoint",
-                "statusbar",
+                pane_entrypoint("statusbar"),
                 "--placement",
                 "split",
                 "--direction",
@@ -2575,7 +2620,17 @@ def watch():
 
 def open_dashboard():
     proc = subprocess.run(
-        [herdr_bin(), "plugin", "pane", "open", "--plugin", "ai-usage", "--entrypoint", "dashboard", "--focus"],
+        [
+            herdr_bin(),
+            "plugin",
+            "pane",
+            "open",
+            "--plugin",
+            os.environ.get("HERDR_PLUGIN_ID") or "ai-usage",
+            "--entrypoint",
+            pane_entrypoint("dashboard"),
+            "--focus",
+        ],
         check=False,
     )
     raise SystemExit(proc.returncode)
