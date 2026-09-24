@@ -11,6 +11,7 @@ import tempfile
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -2078,6 +2079,25 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
     return "\n".join(header + lines + notice_lines), selected_key
 
 
+def escape_complete(extra):
+    if not extra:
+        return False
+    if extra[:1] == b"O":
+        return len(extra) >= 2
+    if extra[:1] == b"[":
+        return len(extra) >= 2 and 0x40 <= extra[-1] <= 0x7E
+    return True
+
+
+def classify_escape(extra):
+    arrows = {b"A": "up", b"B": "down", b"C": "right", b"D": "left"}
+    if extra[:1] == b"O" and extra[1:2] in arrows:
+        return arrows[extra[1:2]]
+    if extra[:1] == b"[" and extra[-1:] in arrows:
+        return arrows[extra[-1:]]
+    return "esc"
+
+
 def read_stream_key():
     data = sys.stdin.buffer.read(1)
     if not data:
@@ -2086,17 +2106,17 @@ def read_stream_key():
         extra = b""
         if os.name == "nt":
             import ctypes
+            import time as time_module
 
             avail = ctypes.c_ulong()
             handle = ctypes.windll.kernel32.GetStdHandle(-10)
-            if ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None) and avail.value:
-                extra = sys.stdin.buffer.read(min(int(avail.value), 6))
-        text = extra.decode("ascii", "replace")
-        if text in {"[A", "OA"}:
-            return "up"
-        if text in {"[B", "OB"}:
-            return "down"
-        return "esc"
+            deadline = time_module.time() + 0.05
+            while len(extra) < 16 and time_module.time() < deadline and not escape_complete(extra):
+                if ctypes.windll.kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None) and avail.value:
+                    extra += sys.stdin.buffer.read(1)
+                    continue
+                time_module.sleep(0.005)
+        return classify_escape(extra)
     if data in {b"\r", b"\n"}:
         return "enter"
     if data == b"\x03":
@@ -2114,6 +2134,27 @@ def console_input_ready():
     return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
 
 
+RAW_HELD = False
+RAW_ATTRS = None
+
+
+def hold_raw(enable):
+    global RAW_HELD, RAW_ATTRS
+    if os.name == "nt" or not sys.stdin.isatty():
+        return
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    if enable and not RAW_HELD:
+        RAW_ATTRS = termios.tcgetattr(fd)
+        tty.setraw(fd)
+        RAW_HELD = True
+    elif RAW_HELD and not enable:
+        termios.tcsetattr(fd, termios.TCSADRAIN, RAW_ATTRS)
+        RAW_HELD = False
+
+
 def read_key():
     if os.name == "nt" and console_input_ready():
         import msvcrt
@@ -2124,13 +2165,9 @@ def read_key():
             return {"H": "up", "P": "down", "K": "left", "M": "right", "S": "delete"}.get(nxt, "")
         if char == "\x1b":
             sequence = ""
-            while msvcrt.kbhit() and len(sequence) < 6:
+            while msvcrt.kbhit() and len(sequence) < 16:
                 sequence += msvcrt.getwch()
-            if sequence in {"[A", "OA"}:
-                return "up"
-            if sequence in {"[B", "OB"}:
-                return "down"
-            return "esc"
+            return classify_escape(sequence.encode("ascii", "replace"))
         if char in {"\r", "\n"}:
             return "enter"
         if char == "\x03":
@@ -2143,26 +2180,29 @@ def read_key():
     import tty
 
     fd = sys.stdin.fileno()
-    attrs = termios.tcgetattr(fd)
+    attrs = None if RAW_HELD else termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
-        char = sys.stdin.read(1)
-        if char == "\x1b":
-            extra = ""
-            while select.select([sys.stdin], [], [], 0.02)[0] and len(extra) < 6:
-                extra += sys.stdin.read(1)
-            if extra in {"[A", "OA"}:
-                return "up"
-            if extra in {"[B", "OB"}:
-                return "down"
-            return "esc"
+        if not RAW_HELD:
+            tty.setraw(fd)
+        data = os.read(fd, 1)
+        if not data:
+            return "q"
+        if data == b"\x1b":
+            extra = b""
+            while len(extra) < 16 and not escape_complete(extra):
+                timeout = 0.05 if not extra else 0.01
+                if not select.select([fd], [], [], timeout)[0]:
+                    break
+                extra += os.read(fd, 1)
+            return classify_escape(extra)
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
-    if char in {"\r", "\n"}:
+        if attrs is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
+    if data in {b"\r", b"\n"}:
         return "enter"
-    if char == "\x03":
+    if data == b"\x03":
         return "ctrl-c"
-    return char.lower()
+    return data.decode("utf-8", "replace").lower()
 
 
 def input_waiting():
@@ -2252,8 +2292,22 @@ def ask_confirm(title, detail, width, height):
             return False
 
 
+POPUP_ROWS = 32
+DASHBOARD_ROW = 1
+
+
+def dashboard_screen():
+    columns, lines = raw_terminal_size()
+    if lines > POPUP_ROWS:
+        return columns, POPUP_ROWS, lines - POPUP_ROWS + 1
+    return columns, max(lines, 1), 1
+
+
 def draw_dashboard(frame):
-    sys.stdout.write("\x1b[H\x1b[J" + frame)
+    if DASHBOARD_ROW <= 1:
+        sys.stdout.write("\x1b[H\x1b[J" + frame)
+    else:
+        sys.stdout.write(f"\x1b[H\x1b[2J\x1b[{DASHBOARD_ROW};1H" + frame)
     sys.stdout.flush()
 
 
@@ -2262,27 +2316,43 @@ def dashboard():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stdout.write("\x1b[?1049h\x1b[?25l")
     sys.stdout.flush()
+    hold_raw(True)
+    global DASHBOARD_ROW
     notice = "불러오는 중…"
     error = False
     selected = ("toggle", "cursor")
     expanded = set()
     try:
-        width, height = terminal_size()
+        width, height, DASHBOARD_ROW = dashboard_screen()
         snapshot = load_snapshot()
         frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible() or ORDER), selected, notice, error, width, height, expanded)
         draw_dashboard(frame)
-        backfill_account_profiles()
-        snapshot = refresh(force=True, ignore_gate=True)
-        notice = None
+        loaded = {"snapshot": snapshot, "notice": notice, "ready": False}
+
+        def load_usage():
+            backfill_account_profiles()
+            loaded["snapshot"] = refresh(force=True, ignore_gate=True)
+            loaded["notice"] = None
+            loaded["ready"] = True
+
+        threading.Thread(target=load_usage, daemon=True).start()
         seen_login = credential_stamp()
         while True:
+            if loaded["ready"]:
+                snapshot = loaded["snapshot"]
+                if notice == "불러오는 중…":
+                    notice = None
+                loaded["ready"] = False
             accounts = load_accounts()
             visible = set(load_visible() or ORDER)
-            width, height = terminal_size()
+            width, height, DASHBOARD_ROW = dashboard_screen()
             frame, selected = render_dashboard(snapshot, accounts, visible, selected, notice, error, width, height, expanded)
             draw_dashboard(frame)
             key = None
             while key is None:
+                if loaded["ready"]:
+                    key = "refresh-done"
+                    break
                 key = read_key_or_pause()
                 current_login = credential_stamp()
                 if current_login is not None and current_login != seen_login:
@@ -2295,7 +2365,7 @@ def dashboard():
                     notice = "로그인한 계정이 바뀌어 사용량을 갱신했습니다"
                     key = "login-changed"
                     break
-            if key == "login-changed":
+            if key in {"login-changed", "refresh-done"}:
                 continue
             notice = None
             error = False
@@ -2372,6 +2442,7 @@ def dashboard():
                 if provider:
                     snapshot = store_provider(snapshot, provider)
     finally:
+        hold_raw(False)
         sys.stdout.write("\x1b[?25h\x1b[?1049l")
         sys.stdout.flush()
 
@@ -2410,16 +2481,32 @@ def pane_entrypoint(name):
 
 def rpc(method, params):
     path = socket_path()
-    endpoint = "\\\\.\\pipe\\" + path if os.name == "nt" else path
+    request = json.dumps({"id": "ai-usage", "method": method, "params": params}).encode("utf-8") + b"\n"
     try:
-        with open(endpoint, "r+b", buffering=0) as handle:
-            handle.write(json.dumps({"id": "ai-usage", "method": method, "params": params}).encode("utf-8") + b"\n")
-            data = b""
-            while b"\n" not in data and len(data) < 500_000:
-                chunk = handle.read(65536)
-                if not chunk:
-                    break
-                data += chunk
+        if os.name == "nt":
+            with open("\\\\.\\pipe\\" + path, "r+b", buffering=0) as handle:
+                handle.write(request)
+                data = b""
+                while b"\n" not in data and len(data) < 500_000:
+                    chunk = handle.read(65536)
+                    if not chunk:
+                        break
+                    data += chunk
+        else:
+            import socket
+
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                sock.connect(path)
+                sock.sendall(request)
+                data = b""
+                while b"\n" not in data and len(data) < 500_000:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    data += chunk
+            finally:
+                sock.close()
     except OSError:
         return None
     try:
