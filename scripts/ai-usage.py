@@ -1943,7 +1943,7 @@ def paint_line(segments, width, background=None):
     if background:
         red, green, blue = background
         return f"\x1b[48;2;{red};{green};{blue}m{body}{pad}\x1b[0m"
-    return body + "\x1b[0m"
+    return body + pad + "\x1b[0m"
 
 
 def menu_items(accounts, expanded):
