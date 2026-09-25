@@ -50,6 +50,7 @@ PROVIDERS = (
 )
 BY_ID = {item["id"]: item for item in PROVIDERS}
 ORDER = [item["id"] for item in PROVIDERS]
+ACTION_KINDS = ("toggle", "save", "logout", "sessions")
 GATE_SECONDS = 60
 FRESH_SECONDS = 4 * 60
 COOLDOWN_SECONDS = 300
@@ -1966,6 +1967,53 @@ def menu_items(accounts, expanded):
     return items
 
 
+def move_dashboard_selection(selected, direction, accounts, expanded):
+    kind, identity = selected
+    if kind == "account":
+        account = next((item for item in accounts if item.get("id") == identity), None)
+        if not account:
+            return ("sessions", ORDER[0])
+        provider_id = account.get("provider")
+        if provider_id not in ORDER:
+            return selected
+        provider_accounts = [item for item in accounts if item.get("provider") == provider_id]
+        account_index = next(
+            (index for index, item in enumerate(provider_accounts) if item.get("id") == identity),
+            0,
+        )
+        if direction in {"left", "right"}:
+            action_index = ACTION_KINDS.index("sessions")
+            offset = -1 if direction == "left" else 1
+            return (ACTION_KINDS[(action_index + offset) % len(ACTION_KINDS)], provider_id)
+        if direction == "up":
+            if account_index:
+                return ("account", provider_accounts[account_index - 1].get("id"))
+            return ("sessions", provider_id)
+        if direction == "down":
+            if account_index + 1 < len(provider_accounts):
+                return ("account", provider_accounts[account_index + 1].get("id"))
+            provider_index = ORDER.index(provider_id)
+            next_provider = ORDER[(provider_index + 1) % len(ORDER)]
+            return ("sessions", next_provider)
+        return selected
+
+    if kind not in ACTION_KINDS or identity not in ORDER:
+        return selected
+    if direction in {"left", "right"}:
+        action_index = ACTION_KINDS.index(kind)
+        offset = -1 if direction == "left" else 1
+        return (ACTION_KINDS[(action_index + offset) % len(ACTION_KINDS)], identity)
+    if direction not in {"up", "down"}:
+        return selected
+    if direction == "down" and kind == "sessions" and identity in expanded:
+        saved = [item for item in accounts if item.get("provider") == identity]
+        if saved:
+            return ("account", saved[0].get("id"))
+    provider_index = ORDER.index(identity)
+    offset = -1 if direction == "up" else 1
+    return (kind, ORDER[(provider_index + offset) % len(ORDER)])
+
+
 def clip_text(text, width):
     if width <= 0:
         return ""
@@ -2029,13 +2077,12 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
     for provider_id in ORDER:
         provider = provider_of(snapshot, provider_id) or empty_provider(provider_id)
         detail = any((provider.get(key) for key in ("accountLabel", "planName")))
-        normal_rows += 1 + int(detail) + 2 + int(bool(provider.get("statusMessage"))) + 4 + 2
+        normal_rows += 1 + int(detail) + 2 + int(bool(provider.get("statusMessage"))) + 1 + 2
         if provider_id in expanded:
             saved_count = sum(1 for item in accounts if item.get("provider") == provider_id)
             normal_rows += 1 + max(saved_count, 1)
     dense_overview = not expanded and (height <= 24 or normal_rows > height)
     tight_overview = dense_overview and height <= 18
-    vertical_actions = dense_overview and height >= 28
     compact = inner < 48 or dense_overview
     meter_bar = max(4, min(18, inner - 5 if compact else inner - 30))
     stamp = parse_iso((snapshot or {}).get("fetchedAt"))
@@ -2058,16 +2105,27 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
         return frame_line("│", segments, "│", border, inner, background)
 
     current = next((item for item in items if item["key"] == selected_key), None)
-    if dense_overview and inner >= 32:
-        shortcuts = ["↑↓ 이동 · Enter 실행   r 갱신   q 닫기"]
-    elif inner < 24 and current and current["kind"] == "account":
-        shortcuts = ["↑↓ 이동", "Enter · d · q"]
+    has_open_accounts = bool(
+        current
+        and current["kind"] == "sessions"
+        and current["provider"] in expanded
+        and any(item.get("provider") == current["provider"] for item in accounts)
+    )
+    if current and current["kind"] == "account":
+        if inner < 24:
+            shortcuts = ["↑↓ 계정 · ←→ 버튼", "Enter · d · q"]
+        else:
+            shortcuts = ["↑↓ 계정 이동 · ←→ 버튼 이동", "Enter 적용 · d 세션 제거 · q 닫기"]
+    elif has_open_accounts:
+        shortcuts = (
+            ["↑↓ 카드·계정 · ←→ 버튼", "Enter 실행 · r 갱신 · q 닫기"]
+            if inner >= 24
+            else ["↓ 계정 · ←→ 버튼", "Enter · r · q"]
+        )
     elif inner < 24:
-        shortcuts = ["↑↓ 이동", "Enter · r · q"]
-    elif current and current["kind"] == "account":
-        shortcuts = ["↑↓ 이동 · Enter 적용", "d 삭제 · q 닫기"] if inner < 48 else ["  ↑↓ 이동    Enter 적용    d 세션 제거    q 닫기"]
+        shortcuts = ["↑↓ 카드 · ←→ 버튼", "Enter · r · q"]
     else:
-        shortcuts = ["↑↓ 이동 · Enter 실행", "r 갱신 · q 닫기"] if inner < 48 else ["  ↑↓ 이동    Enter 실행    r 새로고침    q 닫기"]
+        shortcuts = ["↑↓ 카드 이동 · ←→ 버튼 이동", "Enter 실행 · r 갱신 · q 닫기"]
     header_border = (186, 170, 214)
     header = [
         banner("AI USAGE", clock, header_border),
@@ -2147,51 +2205,37 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             ("logout", "로그아웃" if compact else "현재 세션 파일 제거", True),
             ("sessions", session_label, False),
         ]
-        if dense_overview and not vertical_actions:
+        if inner >= 38:
             action_labels = {
-                "toggle": ("숨기기" if shown else "표시하기") if inner >= 24 else "표시",
-                "save": "저장" if inner >= 24 else "저장",
-                "logout": "로그아웃" if inner >= 24 else "삭제",
-                "sessions": f"계정 {len(saved)}" if saved and inner >= 24 else "계정",
+                "toggle": "숨기기" if shown else "표시하기",
+                "save": "저장",
+                "logout": "로그아웃",
+                "sessions": "계정 닫기" if opened else "계정 보기",
             }
-            action_segments = []
-            row_selected = False
-            for index, (kind, _, danger) in enumerate(actions):
-                key = (kind, provider_id)
-                selected = key == selected_key
-                if selected:
-                    selected_at = len(lines)
-                    row_selected = True
-                if index:
-                    action_segments.append((" ", DIM, False))
-                mark = "▸" if selected else ""
-                tone = CRITICAL if selected and danger else ACCENT if selected else MUTED
-                action_segments.append((mark + action_labels[kind], tone, selected))
-            lines.append(row(action_segments, border, SELECT_BG if row_selected else None))
+        elif inner >= 20:
+            action_labels = {
+                "toggle": "숨김" if shown else "표시",
+                "save": "저장",
+                "logout": "삭제",
+                "sessions": "계정",
+            }
         else:
-            for kind, label, danger in actions:
-                key = (kind, provider_id)
-                selected = key == selected_key
-                if selected:
-                    selected_at = len(lines)
-                mark = "▸ " if selected else "  "
-                hint = ("↵" if compact else "Enter") if selected else ""
-                label_text = mark + label
-                room = max(1, inner - 3 - display_width(hint))
-                text = " " + clip_text(label_text, room)
-                gap = max(1, inner - 1 - display_width(text) - display_width(hint))
-                lines.append(
-                    row(
-                        [
-                            (text, CRITICAL if selected and danger else TEXT if selected else MUTED, selected),
-                            (" " * gap, TEXT, False),
-                            (hint, CRITICAL if selected and danger else ACCENT if selected else DIM, False),
-                            (" ", TEXT, False),
-                        ],
-                        border,
-                        SELECT_BG if selected else None,
-                    )
-                )
+            action_labels = {"toggle": "숨" if shown else "표", "save": "저", "logout": "삭", "sessions": "계"}
+        action_segments = []
+        row_selected = False
+        for index, (kind, _, danger) in enumerate(actions):
+            key = (kind, provider_id)
+            selected = key == selected_key
+            if selected:
+                selected_at = len(lines)
+                row_selected = True
+            if index:
+                separator = "  " if inner >= 38 else " "
+                action_segments.append((separator, DIM, False))
+            mark = "▸" if selected else ""
+            tone = CRITICAL if selected and danger else ACCENT if selected else MUTED
+            action_segments.append((mark + action_labels[kind], tone, selected))
+        lines.append(row(action_segments, border, SELECT_BG if row_selected else None))
         if opened:
             caption = " 저장한 세션 "
             fill = max(0, inner - 2 - display_width(caption))
@@ -2549,18 +2593,24 @@ def dashboard():
                 continue
             notice = None
             error = False
-            items = menu_items(load_accounts(), expanded)
+            items = menu_items(accounts, expanded)
             keys = [item["key"] for item in items]
             if selected not in keys and keys:
                 selected = keys[0]
-            index = keys.index(selected) if selected in keys else 0
             if key in {"q", "esc", "ctrl-c"}:
                 return
-            if key in {"up", "k"} and keys:
-                selected = keys[(index - 1) % len(keys)]
-                continue
-            if key in {"down", "j"} and keys:
-                selected = keys[(index + 1) % len(keys)]
+            direction = {
+                "up": "up",
+                "k": "up",
+                "down": "down",
+                "j": "down",
+                "left": "left",
+                "h": "left",
+                "right": "right",
+                "l": "right",
+            }.get(key)
+            if direction and keys:
+                selected = move_dashboard_selection(selected, direction, accounts, expanded)
                 continue
             if key == "r":
                 notice = "새로고침 중…"
