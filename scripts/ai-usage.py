@@ -2022,9 +2022,11 @@ def content_window_start(selected_at, total, room, card_starts):
 def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, width, height, expanded):
     width = max(width, 18)
     inner = width - 2
-    # Fit the three provider summaries and the pinned shortcut guide in a
-    # phone-sized popup; session details expand back to the navigable layout.
-    dense_overview = 19 <= height <= 22 and not expanded
+    # Keep provider summaries together in short Herdr popups. Herdr's popup
+    # frame reduces the PTY height by its border rows, so the usable height can
+    # be smaller than the requested popup size.
+    dense_overview = height <= 24 and not expanded
+    tight_overview = dense_overview and height <= 18
     compact = inner < 48 or dense_overview
     meter_bar = max(4, min(18, inner - 5 if compact else inner - 30))
     stamp = parse_iso((snapshot or {}).get("fetchedAt"))
@@ -2225,7 +2227,8 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
                     SELECT_BG if selected else None,
                 )
             )
-        lines.append(edge("╰", border))
+        if not tight_overview or provider_id == ORDER[-1]:
+            lines.append(edge("╰", border))
         if not dense_overview:
             lines.append("")
 
@@ -2238,7 +2241,7 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             notice_lines = ["", banner(notice, "", tone), edge("╰", tone)]
     room = max(1, height - len(header) - len(notice_lines))
     if len(lines) > room:
-        start = content_window_start(selected_at, len(lines), room, card_starts)
+        start = 0 if dense_overview else content_window_start(selected_at, len(lines), room, card_starts)
         lines = lines[start : start + room]
     return "\n".join(header + lines + notice_lines), selected_key
 
