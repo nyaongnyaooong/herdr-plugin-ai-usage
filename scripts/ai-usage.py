@@ -81,6 +81,12 @@ def parse_iso(raw):
         return None
 
 
+def format_utc(value, pattern):
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime(pattern)
+
+
 def home():
     return os.path.expanduser("~")
 
@@ -1304,7 +1310,7 @@ def statusbar_frame(snapshot, columns=80, row_limit=24):
                 if reset:
                     parsed = parse_iso(reset)
                     if parsed:
-                        text += " " + fg("reset " + parsed.astimezone().strftime("%m/%d %H:%M"), (246, 193, 119))
+                        text += " " + fg("reset " + format_utc(parsed, "%m/%d %H:%M UTC"), (246, 193, 119))
                 fields.append(text)
             if not fields and api:
                 fields.append(fg(api.get("detail", ""), (156, 207, 142), True))
@@ -2086,7 +2092,7 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
     compact = inner < 48 or dense_overview
     meter_bar = max(4, min(18, inner - 5 if compact else inner - 30))
     stamp = parse_iso((snapshot or {}).get("fetchedAt"))
-    clock = stamp.astimezone().strftime("%H:%M:%S") if stamp else "--:--:--"
+    clock = format_utc(stamp, "%H:%M:%S UTC") if stamp else "--:--:-- UTC"
     items = menu_items(accounts, expanded)
     if selected_key not in {item["key"] for item in items} and items:
         selected_key = items[0]["key"]
@@ -2159,7 +2165,7 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             tone = DIM if muted else (MUTED if percent is None else level_color(percent))
             label_tone = DIM if muted else TEXT
             parsed = parse_iso(meter.get("resetsAt")) if meter.get("resetsAt") else None
-            reset = parsed.astimezone().strftime("%m/%d %H:%M") if parsed else " " * 11
+            reset = format_utc(parsed, "%m/%d %H:%M UTC") if parsed else " " * 15
             if compact:
                 label_text = f"  {label}  "
                 include_reset = bool(parsed and inner >= 28)
