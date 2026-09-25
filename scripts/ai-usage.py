@@ -1327,7 +1327,8 @@ def statusbar_frame(snapshot, columns=80, row_limit=24):
             label = labels[0 if side == "left" else 1]
             color = level_color(percent)
             fields.append(
-                f"{fg(label, (224, 222, 244))} {fg(str(percent) + '%', color, True)} "
+                f"{fg(pad_width(label, 2), (224, 222, 244))} "
+                f"{fg(pad_width(str(percent) + '%', 4, 'right'), color, True)} "
                 f"{fg(bar(percent, bar_width), color)}"
             )
         if not fields and api:
@@ -2091,6 +2092,29 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
     tight_overview = dense_overview and height <= 18
     compact = inner < 48 or dense_overview
     meter_bar = max(4, min(18, inner - 5 if compact else inner - 30))
+    compact_label_width = 6
+    compact_value_width = 4
+    compact_label_cell_width = compact_label_width + 4
+    compact_value_gap = 1
+    compact_reset_width = 15
+    compact_reset_column = compact and inner >= (
+        compact_label_cell_width + compact_value_width + compact_value_gap + 1 + compact_reset_width + 1
+    ) and any(
+        parse_iso(((provider_of(snapshot, provider_id) or empty_provider(provider_id)).get(side) or {}).get("resetsAt"))
+        for provider_id in ORDER
+        for side in ("left", "right")
+    )
+    compact_graph_width = max(
+        1,
+        min(
+            12,
+            inner
+            - compact_label_cell_width
+            - compact_value_width
+            - compact_value_gap
+            - (compact_reset_width + 1 if compact_reset_column else 0),
+        ),
+    )
     stamp = parse_iso((snapshot or {}).get("fetchedAt"))
     clock = format_utc(stamp, "%H:%M:%S UTC") if stamp else "--:--:-- UTC"
     items = menu_items(accounts, expanded)
@@ -2167,18 +2191,17 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             parsed = parse_iso(meter.get("resetsAt")) if meter.get("resetsAt") else None
             reset = format_utc(parsed, "%m/%d %H:%M UTC") if parsed else " " * 15
             if compact:
-                label_text = f"  {label}  "
-                include_reset = bool(parsed and inner >= 28)
-                reset_width = display_width(reset) + 1 if include_reset else 0
-                graph_width = max(1, min(12, inner - display_width(label_text) - display_width(value) - reset_width - 1))
-                graph = bar(percent, graph_width) if percent is not None else "·" * graph_width
+                label_text = "  " + pad_width(label, compact_label_width) + "  "
+                value_text = pad_width(value, compact_value_width, "right")
+                graph = bar(percent, compact_graph_width) if percent is not None else "·" * compact_graph_width
                 segments = [
                     (label_text, label_tone, False),
-                    (value, tone, True),
+                    (value_text, tone, True),
                     (" " + graph, tone, False),
                 ]
-                if include_reset:
-                    segments.append((" " + reset, ACCENT if not muted else DIM, False))
+                if compact_reset_column:
+                    reset_text = " " + reset if parsed else " " * (compact_reset_width + 1)
+                    segments.append((reset_text, ACCENT if not muted and parsed else DIM, False))
                 lines.append(row(segments, border))
             else:
                 graph = bar(percent, meter_bar) if percent is not None else "·" * meter_bar
