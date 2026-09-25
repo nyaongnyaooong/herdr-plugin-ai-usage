@@ -2035,6 +2035,7 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             normal_rows += 1 + max(saved_count, 1)
     dense_overview = not expanded and (height <= 24 or normal_rows > height)
     tight_overview = dense_overview and height <= 18
+    vertical_actions = dense_overview and height >= 28
     compact = inner < 48 or dense_overview
     meter_bar = max(4, min(18, inner - 5 if compact else inner - 30))
     stamp = parse_iso((snapshot or {}).get("fetchedAt"))
@@ -2146,7 +2147,7 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             ("logout", "로그아웃" if compact else "현재 세션 파일 제거", True),
             ("sessions", session_label, False),
         ]
-        if dense_overview:
+        if dense_overview and not vertical_actions:
             action_labels = {
                 "toggle": ("숨기기" if shown else "표시하기") if inner >= 24 else "표시",
                 "save": "저장" if inner >= 24 else "저장",
