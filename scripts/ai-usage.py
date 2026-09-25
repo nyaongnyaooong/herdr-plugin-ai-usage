@@ -2324,6 +2324,12 @@ def hold_raw(enable):
     if enable and not RAW_HELD:
         RAW_ATTRS = termios.tcgetattr(fd)
         tty.setraw(fd)
+        # Keep cooked output processing while reading keys in raw mode.
+        # In particular, Herdr's PTY relies on OPOST/ONLCR to turn each
+        # newline in a rendered frame into a fresh terminal row.
+        raw_attrs = termios.tcgetattr(fd)
+        raw_attrs[1] = RAW_ATTRS[1]
+        termios.tcsetattr(fd, termios.TCSADRAIN, raw_attrs)
         RAW_HELD = True
     elif RAW_HELD and not enable:
         termios.tcsetattr(fd, termios.TCSADRAIN, RAW_ATTRS)
