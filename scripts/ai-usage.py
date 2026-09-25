@@ -2022,10 +2022,18 @@ def content_window_start(selected_at, total, room, card_starts):
 def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, width, height, expanded):
     width = max(width, 18)
     inner = width - 2
-    # Keep provider summaries together in short Herdr popups. Herdr's popup
-    # frame reduces the PTY height by its border rows, so the usable height can
-    # be smaller than the requested popup size.
-    dense_overview = height <= 24 and not expanded
+    # Keep provider summaries together when the regular cards would overflow
+    # the popup. Herdr's popup frame can make the usable PTY smaller than the
+    # requested outer size.
+    normal_rows = (4 if inner < 48 else 3) + 1 + 3
+    for provider_id in ORDER:
+        provider = provider_of(snapshot, provider_id) or empty_provider(provider_id)
+        detail = any((provider.get(key) for key in ("accountLabel", "planName")))
+        normal_rows += 1 + int(detail) + 2 + int(bool(provider.get("statusMessage"))) + 4 + 2
+        if provider_id in expanded:
+            saved_count = sum(1 for item in accounts if item.get("provider") == provider_id)
+            normal_rows += 1 + max(saved_count, 1)
+    dense_overview = not expanded and (height <= 24 or normal_rows > height)
     tight_overview = dense_overview and height <= 18
     compact = inner < 48 or dense_overview
     meter_bar = max(4, min(18, inner - 5 if compact else inner - 30))
