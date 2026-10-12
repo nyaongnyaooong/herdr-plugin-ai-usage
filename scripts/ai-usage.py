@@ -2735,7 +2735,11 @@ def socket_path():
 
 
 def pane_entrypoint(name):
-    return f"{name}-linux" if sys.platform.startswith("linux") else name
+    if sys.platform.startswith("linux"):
+        return f"{name}-linux"
+    if sys.platform == "darwin":
+        return f"{name}-macos"
+    return name
 
 
 def rpc(method, params):

@@ -64,7 +64,7 @@ public final class UsageSession: ObservableObject {
                         credentials: creds,
                         saved: { await cursor.fetch(accessToken: $0.oauthToken) },
                         live: {
-                            let token = try? CursorTokenReader(databaseURL: Self.cursorDB).readAccessToken()
+                            let token = Self.currentCursorSession()?.accessToken
                             return await cursor.fetch(accessToken: token)
                         }
                     )
@@ -125,7 +125,7 @@ public final class UsageSession: ObservableObject {
         defer { capturingProvider = nil }
         switch id {
         case .cursor:
-            let session = try? CursorTokenReader(databaseURL: Self.cursorDB).readSession()
+            let session = Self.currentCursorSession()
             var usage = await cursorAdapter.fetch(accessToken: session?.accessToken)
             if usage.accountLabel == nil {
                 usage.accountLabel = session?.accountLabel
@@ -308,7 +308,7 @@ public final class UsageSession: ObservableObject {
     private func fetchLive(_ provider: ProviderID) async -> ProviderSnapshot {
         switch provider {
         case .cursor:
-            let token = try? CursorTokenReader(databaseURL: Self.cursorDB).readAccessToken()
+            let token = Self.currentCursorSession()?.accessToken
             return await cursorAdapter.fetch(accessToken: token)
         case .chatgpt:
             let auth = try? ChatGPTTokenReader(authFileURL: Self.codexAuth).readAccessToken()
@@ -460,6 +460,30 @@ public final class UsageSession: ObservableObject {
 
     nonisolated private static var cursorDB: URL {
         home.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
+    }
+
+    nonisolated private static func currentCursorSession() -> CursorSession? {
+        if let session = try? CursorTokenReader(databaseURL: cursorDB).readSession() {
+            return session
+        }
+        return cursorCLISession()
+    }
+
+    nonisolated private static func cursorCLISession() -> CursorSession? {
+        let paths = [
+            home.appendingPathComponent(".config/cursor/auth.json"),
+            home.appendingPathComponent(".cursor/auth.json"),
+        ]
+        for url in paths {
+            guard let data = try? Data(contentsOf: url),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let rawToken = (json["accessToken"] as? String) ?? (json["access_token"] as? String)
+            let token = rawToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if token.isEmpty { continue }
+            let email = (json["email"] as? String) ?? (json["userEmail"] as? String)
+            return CursorSession(accessToken: token, email: email)
+        }
+        return nil
     }
 
     nonisolated private static var claudeCredentials: URL {

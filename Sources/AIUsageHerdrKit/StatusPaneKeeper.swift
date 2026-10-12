@@ -35,7 +35,7 @@ public enum StatusPaneKeeper {
             _ = run(herdr, [
                 "plugin", "pane", "open",
                 "--plugin", "ai-usage",
-                "--entrypoint", "statusbar",
+                "--entrypoint", "statusbar-macos",
                 "--placement", "split",
                 "--direction", "down",
                 "--target-pane", target.id,

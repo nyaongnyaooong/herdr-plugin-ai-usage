@@ -3,7 +3,7 @@ name = "AI Usage"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
 description = "Shows Cursor, ChatGPT, and Claude usage in Herdr panes and a dashboard."
-platforms = ["linux", "windows"]
+platforms = ["linux", "macos", "windows"]
 
 [[panes]]
 id = "statusbar"
@@ -36,6 +36,22 @@ width = "80%"
 height = 32
 command = ["sh", "scripts/run-linux.sh", "dashboard"]
 platforms = ["linux"]
+
+[[panes]]
+id = "statusbar-macos"
+title = "AI Usage"
+placement = "split"
+command = ["sh", "scripts/run-macos.sh", "statusbar"]
+platforms = ["macos"]
+
+[[panes]]
+id = "dashboard-macos"
+title = "AI Usage"
+placement = "popup"
+width = "80%"
+height = 32
+command = ["sh", "scripts/run-macos.sh", "dashboard"]
+platforms = ["macos"]
 
 [[actions]]
 id = "open"
@@ -85,6 +101,30 @@ title = "Start AI usage monitor (Linux)"
 command = ["sh", "scripts/run-linux.sh", "watch-start"]
 platforms = ["linux"]
 
+[[actions]]
+id = "open-macos"
+title = "Open AI usage (macOS)"
+command = ["sh", "scripts/run-macos.sh", "open"]
+platforms = ["macos"]
+
+[[actions]]
+id = "status-macos"
+title = "Show one-line AI usage status (macOS)"
+command = ["sh", "scripts/run-macos.sh", "status"]
+platforms = ["macos"]
+
+[[actions]]
+id = "refresh-macos"
+title = "Refresh AI usage (macOS)"
+command = ["sh", "scripts/run-macos.sh", "refresh"]
+platforms = ["macos"]
+
+[[actions]]
+id = "watch-start-macos"
+title = "Start AI usage monitor (macOS)"
+command = ["sh", "scripts/run-macos.sh", "watch-start"]
+platforms = ["macos"]
+
 [[startup]]
 command = ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/run-windows.ps1", "watch-start"]
 platforms = ["windows"]
@@ -92,3 +132,11 @@ platforms = ["windows"]
 [[startup]]
 command = ["sh", "scripts/run-linux.sh", "watch-start"]
 platforms = ["linux"]
+
+[[startup]]
+command = ["sh", "scripts/run-macos.sh", "watch-start"]
+platforms = ["macos"]
+
+[[build]]
+command = ["sh", "scripts/build.sh"]
+platforms = ["macos"]
