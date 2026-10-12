@@ -11,7 +11,7 @@ herdr server reload-config
 
 Windows needs Python 3.9 or newer. Linux needs Python 3 and a POSIX shell. macOS needs Swift. Herdr starts the usage watcher at startup.
 
-Data is stored under `%APPDATA%\AIUsage` on Windows, `~/Library/Application Support/AIUsage` on macOS, and `${XDG_DATA_HOME:-~/.local/share}/AIUsage` on Linux. Cursor authentication is read from `%APPDATA%\Cursor\User\globalStorage\state.vscdb` on Windows, `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` on macOS, or `${XDG_CONFIG_HOME:-~/.config}/Cursor/User/globalStorage/state.vscdb` on Linux. On macOS and Linux, if the Cursor editor session is unavailable, the plugin also reads the Cursor Agent CLI session from `~/.config/cursor/auth.json` or `~/.cursor/auth.json`. Codex and Claude use their standard files under `~/.codex` and `~/.claude`.
+Data is stored under `%APPDATA%\AIUsage` on Windows, `~/Library/Application Support/AIUsage` on macOS, and `${XDG_DATA_HOME:-~/.local/share}/AIUsage` on Linux. Cursor authentication is read from `%APPDATA%\Cursor\User\globalStorage\state.vscdb` on Windows, `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` on macOS, or `${XDG_CONFIG_HOME:-~/.config}/Cursor/User/globalStorage/state.vscdb` on Linux. On macOS and Linux, if the Cursor editor session is unavailable, the plugin reads the Cursor Agent CLI session from `~/.cursor/auth.json` or `~/.config/cursor/auth.json`. On macOS the CLI stores the login in the keychain item `cursor-access-token` / `cursor-user`, and the account email comes from `~/.cursor/cli-config.json`. Codex and Claude use their standard files under `~/.codex` and `~/.claude`.
 
 ## macOS keybinding
 
@@ -33,6 +33,6 @@ command = "ai-usage.open-linux"
 description = "AI usage"
 ```
 
-Reload the server config, then press prefix+u to open the dashboard.
+On macOS and Linux, the usage watcher adds this `prefix+u` binding to Herdr's `config.toml` when it is missing, then reloads the server config. Press prefix+u to open the dashboard.
 
 The dashboard supports `r` to refresh, `c`/`g`/`l` to save the active Cursor/ChatGPT/Claude session, number keys to apply saved accounts, `x<number>` to delete an account, `vc`/`vg`/`vl` to toggle visibility, and `q` to close.

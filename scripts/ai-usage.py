@@ -257,34 +257,98 @@ def cursor_db_path():
     return os.path.join(root, "Cursor", "User", "globalStorage", "state.vscdb")
 
 
-def cursor_cli_auth_path():
-    if os.name == "nt":
-        return None
-    root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home(), ".config")
-    return os.path.join(root, "cursor", "auth.json")
+def cursor_cli_auth_paths():
+    paths = []
+    configured = (os.environ.get("CURSOR_CONFIG_DIR") or "").strip()
+    if configured:
+        paths.append(os.path.join(configured, "auth.json"))
+    paths.append(os.path.join(home(), ".cursor", "auth.json"))
+    if os.name != "nt":
+        root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home(), ".config")
+        paths.append(os.path.join(root, "cursor", "auth.json"))
+    return paths
 
 
-def read_cursor_cli_session():
-    path = cursor_cli_auth_path()
-    if not path or not os.path.exists(path):
-        return None
+def cursor_cli_config_path():
+    configured = (os.environ.get("CURSOR_CONFIG_DIR") or "").strip()
+    if configured:
+        return os.path.join(configured, "cli-config.json")
+    return os.path.join(home(), ".cursor", "cli-config.json")
+
+
+def cursor_cli_profile():
+    path = cursor_cli_config_path()
+    if not os.path.exists(path):
+        return None, None
     try:
         with open(path, encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, json.JSONDecodeError):
-        return READ_FAILED
-    if not isinstance(payload, dict):
-        return READ_FAILED
-    token = payload.get("accessToken") or payload.get("access_token")
-    if not isinstance(token, str) or not token.strip():
+        return None, None
+    auth_info = payload.get("authInfo") if isinstance(payload, dict) else None
+    if not isinstance(auth_info, dict):
+        return None, None
+    email = auth_info.get("email")
+    name = auth_info.get("displayName")
+    return (
+        email.strip() if isinstance(email, str) and email.strip() else None,
+        name.strip() if isinstance(name, str) and name.strip() else None,
+    )
+
+
+def cursor_keychain_token():
+    if sys.platform != "darwin":
         return None
-    refresh = payload.get("refreshToken") or payload.get("refresh_token")
-    email = payload.get("email") or payload.get("userEmail")
-    return {
-        "accessToken": token.strip(),
-        "refreshToken": refresh.strip() if isinstance(refresh, str) else None,
-        "email": email.strip() if isinstance(email, str) else None,
-    }
+    try:
+        result = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-s", "cursor-access-token", "-a", "cursor-user", "-w"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    token = (result.stdout or "").strip()
+    if not token:
+        return None
+    return token
+
+
+def read_cursor_cli_session():
+    saw_failure = False
+    for path in cursor_cli_auth_paths():
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            saw_failure = True
+            continue
+        if not isinstance(payload, dict):
+            saw_failure = True
+            continue
+        token = payload.get("accessToken") or payload.get("access_token")
+        if not isinstance(token, str) or not token.strip():
+            continue
+        refresh = payload.get("refreshToken") or payload.get("refresh_token")
+        email = payload.get("email") or payload.get("userEmail")
+        profile_email, _profile_name = cursor_cli_profile()
+        return {
+            "accessToken": token.strip(),
+            "refreshToken": refresh.strip() if isinstance(refresh, str) else None,
+            "email": email.strip() if isinstance(email, str) and email.strip() else profile_email,
+        }
+    token = cursor_keychain_token()
+    if token:
+        email, _profile_name = cursor_cli_profile()
+        return {"accessToken": token, "refreshToken": None, "email": email}
+    if saw_failure:
+        return READ_FAILED
+    return None
 
 
 def read_cursor_session():

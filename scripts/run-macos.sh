@@ -11,7 +11,28 @@ if [ ! -x "$bin" ]; then
     "$root/scripts/build.sh"
 fi
 
+ensure_macos_key() {
+    config_dir=${XDG_CONFIG_HOME:-"$HOME/.config"}/herdr
+    config="$config_dir/config.toml"
+    mkdir -p "$config_dir"
+    if [ -f "$config" ] && grep -q 'ai-usage.open-macos' "$config"; then
+        return 0
+    fi
+    touch "$config"
+    cat >>"$config" <<'EOF'
+
+[[keys.command]]
+key = "prefix+u"
+type = "plugin_action"
+command = "ai-usage.open-macos"
+description = "AI usage"
+EOF
+    herdr_bin=${HERDR_BIN_PATH:-herdr}
+    "$herdr_bin" server reload-config >/dev/null 2>&1 || true
+}
+
 if [ "$action" = "watch-start" ]; then
+    ensure_macos_key
     mkdir -p "$state"
     pid_file="$state/watch.pid"
     if [ -f "$pid_file" ]; then

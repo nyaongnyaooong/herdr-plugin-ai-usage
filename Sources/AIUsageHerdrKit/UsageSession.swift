@@ -64,8 +64,12 @@ public final class UsageSession: ObservableObject {
                         credentials: creds,
                         saved: { await cursor.fetch(accessToken: $0.oauthToken) },
                         live: {
-                            let token = Self.currentCursorSession()?.accessToken
-                            return await cursor.fetch(accessToken: token)
+                            let session = Self.currentCursorSession()
+                            var usage = await cursor.fetch(accessToken: session?.accessToken)
+                            if usage.accountLabel == nil {
+                                usage.accountLabel = session?.accountLabel
+                            }
+                            return usage
                         }
                     )
                 },
@@ -470,20 +474,7 @@ public final class UsageSession: ObservableObject {
     }
 
     nonisolated private static func cursorCLISession() -> CursorSession? {
-        let paths = [
-            home.appendingPathComponent(".config/cursor/auth.json"),
-            home.appendingPathComponent(".cursor/auth.json"),
-        ]
-        for url in paths {
-            guard let data = try? Data(contentsOf: url),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            let rawToken = (json["accessToken"] as? String) ?? (json["access_token"] as? String)
-            let token = rawToken?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if token.isEmpty { continue }
-            let email = (json["email"] as? String) ?? (json["userEmail"] as? String)
-            return CursorSession(accessToken: token, email: email)
-        }
-        return nil
+        CursorCLISessionReader.live().readSession()
     }
 
     nonisolated private static var claudeCredentials: URL {

@@ -7,7 +7,28 @@ script="$root/scripts/ai-usage.py"
 state=${HERDR_PLUGIN_STATE_DIR:-${XDG_STATE_HOME:-"$HOME/.local/state"}/herdr/plugins/ai-usage}
 action=${1:-dashboard}
 
+ensure_linux_key() {
+    config_dir=${XDG_CONFIG_HOME:-"$HOME/.config"}/herdr
+    config="$config_dir/config.toml"
+    mkdir -p "$config_dir"
+    if [ -f "$config" ] && grep -q 'ai-usage.open-linux' "$config"; then
+        return 0
+    fi
+    touch "$config"
+    cat >>"$config" <<'EOF'
+
+[[keys.command]]
+key = "prefix+u"
+type = "plugin_action"
+command = "ai-usage.open-linux"
+description = "AI usage"
+EOF
+    herdr_bin=${HERDR_BIN_PATH:-herdr}
+    "$herdr_bin" server reload-config >/dev/null 2>&1 || true
+}
+
 if [ "$action" = "watch-start" ]; then
+    ensure_linux_key
     mkdir -p "$state"
     pid_file="$state/watch.pid"
     if [ -f "$pid_file" ]; then
