@@ -3,8 +3,10 @@
 
 import base64
 import hashlib
+import getpass
 import json
 import os
+import plistlib
 import re
 import shutil
 import tempfile
@@ -92,6 +94,10 @@ def home():
 
 
 def data_dir():
+    if sys.platform == "darwin":
+        path = os.path.join(home(), "Library", "Application Support", "AIUsage")
+        os.makedirs(path, exist_ok=True)
+        return path
     root = os.environ.get("APPDATA")
     if not root:
         root = os.environ.get("XDG_DATA_HOME") or os.path.join(home(), ".local", "share")
@@ -125,10 +131,50 @@ def load_json(path, default):
 
 
 def save_json(path, value):
-    temp = path + ".tmp"
-    with open(temp, "w", encoding="utf-8") as handle:
-        json.dump(value, handle, ensure_ascii=False, indent=2)
-    os.replace(temp, path)
+    fd, temp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".ai-usage-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.remove(temp)
+
+
+def migrate_macos_data():
+    """Keep the Swift runner's saved accounts and visibility on first upgrade."""
+    if sys.platform != "darwin":
+        return
+    payload = load_json(accounts_path(), {})
+    accounts = payload.get("accounts") if isinstance(payload, dict) else None
+    if isinstance(accounts, list) and any("isActive" in item for item in accounts):
+        secrets = load_json(os.path.join(data_dir(), "credentials.json"), {})
+        credentials = secrets.get("credentials", {}) if isinstance(secrets, dict) else {}
+        if not isinstance(credentials, dict):
+            credentials = {}
+        converted = []
+        for item in accounts:
+            item = dict(item)
+            if "isActive" in item:
+                item["active"] = item.pop("isActive")
+                credential = credentials.get(item.get("id"), {})
+                item["oauthToken"] = credential.get("accessToken") or None
+                item["accountID"] = credential.get("accountID")
+                item["apiKey"] = credential.get("apiKey")
+            converted.append(item)
+        backup = accounts_path() + ".swift-backup"
+        if not os.path.exists(backup):
+            save_json(backup, payload)
+        save_accounts(converted)
+    if not os.path.exists(visibility_path()):
+        path = os.path.join(home(), "Library", "Preferences", "app.aiusage.AIUsage.plist")
+        try:
+            with open(path, "rb") as handle:
+                visible = plistlib.load(handle).get("visibleProviderIDs")
+            if isinstance(visible, list):
+                save_visible(visible)
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            pass
 
 
 def herdr_bin():
@@ -251,6 +297,8 @@ def failure(provider_id, status, unauthorized):
 
 
 def cursor_db_path():
+    if sys.platform == "darwin":
+        return os.path.join(home(), "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb")
     root = os.environ.get("APPDATA")
     if not root:
         root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home(), ".config")
@@ -556,10 +604,12 @@ def write_codex_bundle(bundle):
 
 def write_cursor_session(access_token, refresh_token, email):
     path = cursor_db_path()
-    if not os.path.exists(path):
-        return False, "Cursor 세션 데이터베이스가 없습니다"
     if not access_token:
         return False, "저장한 Cursor 세션에 액세스 토큰이 없습니다"
+    if not os.path.exists(path):
+        if os.name == "nt":
+            return False, "Cursor 세션 데이터베이스가 없습니다"
+        return write_cursor_cli_session(access_token, refresh_token, email)
     try:
         connection = sqlite3.connect(path, timeout=2)
     except sqlite3.Error:
@@ -571,6 +621,7 @@ def write_cursor_session(access_token, refresh_token, email):
             ("cursorAuth/cachedEmail", email),
         ):
             if not value:
+                connection.execute("DELETE FROM ItemTable WHERE key = ?", (key,))
                 continue
             updated = connection.execute("UPDATE ItemTable SET value = ? WHERE key = ?", (value, key))
             if updated.rowcount == 0:
@@ -580,17 +631,30 @@ def write_cursor_session(access_token, refresh_token, email):
         return False, "Cursor를 종료한 뒤 다시 세션을 적용하세요"
     finally:
         connection.close()
+    if os.name != "nt" and isinstance(read_cursor_cli_session(), dict):
+        return write_cursor_cli_session(access_token, refresh_token, email)
     return True, None
 
 
+def write_cursor_cli_session(access_token, refresh_token, email):
+    if sys.platform == "darwin" and not write_macos_keychain("cursor-access-token", "cursor-user", access_token):
+        return False, "Cursor CLI 키체인 세션을 저장하지 못했습니다"
+    path = cursor_cli_auth_paths()[0]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    save_json(path, {"accessToken": access_token, "refreshToken": refresh_token, "email": email})
+    config_path = cursor_cli_config_path()
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    config = load_json(config_path, {})
+    if not isinstance(config, dict):
+        config = {}
+    config["authInfo"] = {"email": email}
+    save_json(config_path, config)
+    return True, "Cursor CLI 로그인 세션을 바꿨습니다. CLI를 다시 여세요."
+
+
 def read_claude_oauth():
-    token = read_claude_token()
-    if token is READ_FAILED or not token:
-        return None
-    try:
-        with open(claude_credentials_path(), encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+    payload = read_claude_credentials()
+    if not isinstance(payload, dict):
         return None
     oauth = payload.get("claudeAiOauth") if isinstance(payload, dict) else None
     return oauth if isinstance(oauth, dict) else None
@@ -599,6 +663,16 @@ def read_claude_oauth():
 def write_claude_oauth(oauth):
     if not isinstance(oauth, dict) or not oauth.get("accessToken"):
         return False, "저장한 Claude 세션에 액세스 토큰이 없습니다"
+    if sys.platform == "darwin":
+        current = read_claude_credentials()
+        if current is READ_FAILED:
+            return False, "Claude 키체인에 접근하지 못했습니다"
+        current = dict(current or {})
+        current["claudeAiOauth"] = oauth
+        if not write_macos_keychain(claude_keychain_service(), claude_keychain_account(), json.dumps(current)):
+            return False, "Claude 키체인 세션을 저장하지 못했습니다"
+        CLAUDE_CREDENTIAL_CACHE.clear()
+        return True, None
     path = claude_credentials_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     current = {}
@@ -711,17 +785,97 @@ def read_chatgpt_auth(path=None):
 
 
 def claude_credentials_path():
-    return os.path.join(home(), ".claude", ".credentials.json")
+    directory = os.environ.get("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+    if directory is None:
+        directory = os.environ.get("CLAUDE_CONFIG_DIR")
+    return os.path.join(os.path.expanduser(directory or os.path.join(home(), ".claude")), ".credentials.json")
 
 
-def read_claude_token(path=None):
+def claude_keychain_service():
+    secure = os.environ.get("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    directory = secure if secure is not None else config
+    suffix = ""
+    if directory:
+        normalized = unicodedata.normalize("NFC", directory if secure is not None else os.path.abspath(os.path.expanduser(directory)))
+        suffix = "-" + hashlib.sha256(normalized.encode()).hexdigest()[:8]
+    return "Claude Code-credentials" + suffix
+
+
+def claude_keychain_account():
+    username = os.environ.get("USER") or getpass.getuser()
+    return username if re.fullmatch(r"[a-zA-Z0-9._-]+", username) else "claude-code-user"
+
+
+def read_macos_keychain(service, account):
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return READ_FAILED
+    if proc.returncode == 44:
+        return None
+    if proc.returncode != 0:
+        return READ_FAILED
+    return proc.stdout.strip() or None
+
+
+def write_macos_keychain(service, account, value):
+    # Send the secret through stdin, so it never appears in process arguments.
+    if not re.fullmatch(r"[a-zA-Z0-9 ._-]+", service) or not re.fullmatch(r"[a-zA-Z0-9._-]+", account):
+        return False
+    command = f'add-generic-password -U -s "{service}" -a "{account}" -X "{value.encode().hex()}"\n'
+    try:
+        proc = subprocess.run(["/usr/bin/security", "-i"], input=command, capture_output=True, text=True, timeout=5)
+        return proc.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def delete_macos_keychain(service, account):
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/security", "delete-generic-password", "-s", service, "-a", account],
+            capture_output=True, text=True, timeout=5,
+        )
+        return proc.returncode in (0, 44)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+CLAUDE_CREDENTIAL_CACHE = {}
+
+
+def read_claude_credentials(path=None):
+    if path is None and sys.platform == "darwin":
+        service, account = claude_keychain_service(), claude_keychain_account()
+        cached = CLAUDE_CREDENTIAL_CACHE.get((service, account))
+        if cached and time.monotonic() - cached[0] < 1:
+            return cached[1]
+        raw = read_macos_keychain(service, account)
+        if raw is READ_FAILED:
+            return READ_FAILED
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except (ValueError, TypeError):
+                return READ_FAILED
+            if not isinstance(payload, dict):
+                return READ_FAILED
+            CLAUDE_CREDENTIAL_CACHE[(service, account)] = (time.monotonic(), payload)
+            return payload
     target = path or claude_credentials_path()
     if not os.path.exists(target):
         return None
-    try:
-        with open(target, encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError):
+    payload = load_json(target, READ_FAILED)
+    return payload if isinstance(payload, dict) or payload is READ_FAILED else None
+
+
+def read_claude_token(path=None):
+    payload = read_claude_credentials(path)
+    if payload is READ_FAILED:
         return READ_FAILED
     if not isinstance(payload, dict):
         return None
@@ -1269,7 +1423,7 @@ def compact(provider_id, provider):
 
 def status_line(snapshot=None):
     snapshot = snapshot if snapshot is not None else load_snapshot()
-    visible = load_visible() or list(ORDER)
+    visible = load_visible()
     return "  ".join(compact(provider_id, provider_of(snapshot, provider_id)) for provider_id in visible)
 
 
@@ -1317,7 +1471,7 @@ def connected(provider):
 
 def statusbar_frame(snapshot, columns=80, row_limit=24):
     providers = []
-    visible = load_visible() or list(ORDER)
+    visible = load_visible()
     for provider_id in visible:
         provider = provider_of(snapshot, provider_id)
         if not connected(provider):
@@ -1529,7 +1683,7 @@ def capture(provider_id):
 
 
 def toggle_visible(provider_id):
-    visible = set(load_visible() or ORDER)
+    visible = set(load_visible())
     shown = provider_id not in visible
     if shown:
         visible.add(provider_id)
@@ -1890,7 +2044,7 @@ def clear_live_session(provider_id):
     elif provider_id == "chatgpt":
         ok, message = delete_session_file(codex_auth_path(), "Codex")
     else:
-        ok, message = delete_session_file(claude_credentials_path(), "Claude")
+        ok, message = clear_claude_session()
     if not ok:
         return None, message
     accounts = load_accounts()
@@ -1900,6 +2054,29 @@ def clear_live_session(provider_id):
     save_accounts(accounts)
     save_source(provider_id, {"mode": "live", "liveIdentity": stored_identity(live_identity(provider_id))})
     return fetch_provider(provider_id), message
+
+
+def clear_claude_session():
+    if sys.platform != "darwin":
+        return delete_session_file(claude_credentials_path(), "Claude")
+    payload = read_claude_credentials()
+    if payload is READ_FAILED:
+        return False, "Claude 키체인에 접근하지 못했습니다"
+    if not isinstance(payload, dict) or not payload.get("claudeAiOauth"):
+        return False, "지울 Claude 세션이 없습니다"
+    # Preserve unrelated keychain fields when removing the OAuth session.
+    payload = dict(payload)
+    payload.pop("claudeAiOauth", None)
+    if not write_macos_keychain(claude_keychain_service(), claude_keychain_account(), json.dumps(payload)):
+        return False, "Claude 키체인 세션을 지우지 못했습니다"
+    if os.path.exists(claude_credentials_path()):
+        fallback = load_json(claude_credentials_path(), READ_FAILED)
+        if fallback is READ_FAILED or not isinstance(fallback, dict):
+            return False, "Claude 세션 파일을 읽지 못했습니다"
+        fallback.pop("claudeAiOauth", None)
+        save_json(claude_credentials_path(), fallback)
+    CLAUDE_CREDENTIAL_CACHE.clear()
+    return True, "Claude 로그인 세션을 지웠습니다"
 
 
 def delete_session_file(path, name):
@@ -1914,8 +2091,23 @@ def delete_session_file(path, name):
 
 def clear_cursor_session():
     path = cursor_db_path()
-    if not os.path.exists(path):
+    cli = read_cursor_cli_session() if os.name != "nt" else None
+    has_database = os.path.exists(path)
+    if not has_database and not isinstance(cli, dict):
         return False, "지울 Cursor 세션이 없습니다"
+    if isinstance(cli, dict):
+        if sys.platform == "darwin" and not delete_macos_keychain("cursor-access-token", "cursor-user"):
+            return False, "Cursor CLI 키체인 세션을 지우지 못했습니다"
+        for auth_path in cursor_cli_auth_paths():
+            if os.path.exists(auth_path):
+                payload = load_json(auth_path, READ_FAILED)
+                if not isinstance(payload, dict):
+                    return False, "Cursor CLI 세션 파일을 읽지 못했습니다"
+                for key in ("accessToken", "access_token", "refreshToken", "refresh_token"):
+                    payload.pop(key, None)
+                save_json(auth_path, payload)
+    if not has_database:
+        return True, "Cursor CLI 로그인 세션을 지웠습니다"
     try:
         connection = sqlite3.connect(path, timeout=2)
         try:
@@ -2642,7 +2834,7 @@ def dashboard():
     try:
         width, height, DASHBOARD_ROW = dashboard_screen()
         snapshot = load_snapshot()
-        frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible() or ORDER), selected, notice, error, width, height, expanded)
+        frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible()), selected, notice, error, width, height, expanded)
         draw_dashboard(frame)
         loaded = {"snapshot": snapshot, "notice": notice, "ready": False}
 
@@ -2661,7 +2853,7 @@ def dashboard():
                     notice = None
                 loaded["ready"] = False
             accounts = load_accounts()
-            visible = set(load_visible() or ORDER)
+            visible = set(load_visible())
             width, height, DASHBOARD_ROW = dashboard_screen()
             frame, selected = render_dashboard(snapshot, accounts, visible, selected, notice, error, width, height, expanded)
             draw_dashboard(frame)
@@ -2670,18 +2862,20 @@ def dashboard():
                 if loaded["ready"]:
                     key = "refresh-done"
                     break
-                key = read_key_or_pause()
                 current_login = credential_stamp()
                 if current_login is not None and current_login != seen_login:
                     seen_login = current_login
                     notice = "로그인한 계정을 다시 읽는 중…"
                     error = False
-                    frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible() or ORDER), selected, notice, error, width, height, expanded)
+                    frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible()), selected, notice, error, width, height, expanded)
                     draw_dashboard(frame)
                     snapshot = refresh(force=True, ignore_gate=True)
                     notice = "로그인한 계정이 바뀌어 사용량을 갱신했습니다"
                     key = "login-changed"
                     break
+                # Detect credential changes before consuming the next shortcut.
+                # Otherwise the first arrow after save/apply/logout is discarded.
+                key = read_key_or_pause()
             if key in {"login-changed", "refresh-done"}:
                 continue
             notice = None
@@ -2707,7 +2901,7 @@ def dashboard():
                 continue
             if key == "r":
                 notice = "새로고침 중…"
-                frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible() or ORDER), selected, notice, False, width, height, expanded)
+                frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible()), selected, notice, False, width, height, expanded)
                 draw_dashboard(frame)
                 snapshot = refresh(force=True, ignore_gate=True)
                 seen_login = credential_stamp()
@@ -2728,7 +2922,7 @@ def dashboard():
                         expanded.add(provider_id)
                 elif current["kind"] == "save":
                     notice = "현재 세션을 저장하는 중…"
-                    frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible() or ORDER), selected, notice, False, width, height, expanded)
+                    frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible()), selected, notice, False, width, height, expanded)
                     draw_dashboard(frame)
                     notice = capture(current["provider"])
                     error = "저장했습니다" not in notice
@@ -2736,7 +2930,7 @@ def dashboard():
                         snapshot = store_provider(snapshot, fetch_provider(current["provider"]))
                 elif current["kind"] == "account":
                     notice = "저장한 세션을 적용하는 중…"
-                    frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible() or ORDER), selected, notice, False, width, height, expanded)
+                    frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible()), selected, notice, False, width, height, expanded)
                     draw_dashboard(frame)
                     provider, notice = activate_account(current["account"].get("id"))
                     error = provider is None
@@ -2748,7 +2942,7 @@ def dashboard():
                         notice = "세션 파일 제거를 취소했습니다"
                         continue
                     notice = "현재 세션 파일을 제거하는 중…"
-                    frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible() or ORDER), selected, notice, False, width, height, expanded)
+                    frame, selected = render_dashboard(snapshot, load_accounts(), set(load_visible()), selected, notice, False, width, height, expanded)
                     draw_dashboard(frame)
                     provider, notice = clear_live_session(current["provider"])
                     error = provider is None
@@ -3051,6 +3245,7 @@ def open_dashboard():
 
 
 def main():
+    migrate_macos_data()
     command = sys.argv[1] if len(sys.argv) > 1 else "dashboard"
     if command == "status":
         print(status_line(refresh(force=False)))

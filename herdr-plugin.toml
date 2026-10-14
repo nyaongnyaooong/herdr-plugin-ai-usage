@@ -136,7 +136,3 @@ platforms = ["linux"]
 [[startup]]
 command = ["sh", "scripts/run-macos.sh", "watch-start"]
 platforms = ["macos"]
-
-[[build]]
-command = ["sh", "scripts/build.sh"]
-platforms = ["macos"]

@@ -85,7 +85,8 @@ def test_socket_rpc():
 
 def main():
     test_arrow_keys()
-    test_socket_rpc()
+    if os.environ.get("HERDR_TAB_ID"):
+        test_socket_rpc()
     print("ok")
 
 
