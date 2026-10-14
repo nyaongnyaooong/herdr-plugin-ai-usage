@@ -36,3 +36,7 @@ description = "AI usage"
 On macOS and Linux, the usage watcher adds this `prefix+u` binding to Herdr's `config.toml` when it is missing, then reloads the server config. Press prefix+u to open the dashboard.
 
 The dashboard supports `r` to refresh, `c`/`g`/`l` to save the active Cursor/ChatGPT/Claude session, number keys to apply saved accounts, `x<number>` to delete an account, `vc`/`vg`/`vl` to toggle visibility, and `q` to close.
+
+On macOS, shortcuts respond immediately without Enter. Use Up/Down to select a saved account and Enter to apply it. Numeric account commands (`<number>` and `x<number>`) require Enter so multi-digit account numbers work. Escape cancels a pending command, and Backspace edits it.
+
+Run `sh scripts/test-macos-input.sh` on macOS to verify immediate PTY input, arrow sequences, disabled echo, and terminal restoration. This regression test only needs the Swift compiler, including on Command Line Tools installations without Swift Testing.
