@@ -83,10 +83,30 @@ def parse_iso(raw):
         return None
 
 
-def format_utc(value, pattern):
+DISPLAY_TIMEZONES = {"UTC": timezone.utc, "KST": timezone(timedelta(hours=9), "KST")}
+
+
+def load_display_timezone():
+    settings = load_json(os.path.join(data_dir(), "settings.json"), {})
+    name = settings.get("timezone") if isinstance(settings, dict) else None
+    return name if name in DISPLAY_TIMEZONES else "KST"
+
+
+def toggle_display_timezone():
+    name = "UTC" if load_display_timezone() == "KST" else "KST"
+    path = os.path.join(data_dir(), "settings.json")
+    settings = load_json(path, {})
+    if not isinstance(settings, dict):
+        settings = {}
+    settings["timezone"] = name
+    save_json(path, settings)
+    return name
+
+
+def format_display_time(value, pattern, zone):
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).strftime(pattern)
+    return value.astimezone(DISPLAY_TIMEZONES[zone]).strftime(pattern)
 
 
 def home():
@@ -1470,6 +1490,7 @@ def connected(provider):
 
 
 def statusbar_frame(snapshot, columns=80, row_limit=24):
+    zone = load_display_timezone()
     providers = []
     visible = load_visible()
     for provider_id in visible:
@@ -1528,7 +1549,7 @@ def statusbar_frame(snapshot, columns=80, row_limit=24):
                 if reset:
                     parsed = parse_iso(reset)
                     if parsed:
-                        text += " " + fg("reset " + format_utc(parsed, "%m/%d %H:%M UTC"), (246, 193, 119))
+                        text += " " + fg("reset " + format_display_time(parsed, "%m/%d %H:%M %Z", zone), (246, 193, 119))
                 fields.append(text)
             if not fields and api:
                 fields.append(fg(api.get("detail", ""), (156, 207, 142), True))
@@ -2331,6 +2352,7 @@ def content_window_start(selected_at, total, room, card_starts):
 
 
 def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, width, height, expanded):
+    zone = load_display_timezone()
     width = max(width, 18)
     inner = width - 2
     # Keep provider summaries together when the regular cards would overflow
@@ -2372,7 +2394,7 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
         ),
     )
     stamp = parse_iso((snapshot or {}).get("fetchedAt"))
-    clock = format_utc(stamp, "%H:%M:%S UTC") if stamp else "--:--:-- UTC"
+    clock = format_display_time(stamp, "%H:%M:%S %Z", zone) if stamp else "--:--:-- " + zone
     items = menu_items(accounts, expanded)
     if selected_key not in {item["key"] for item in items} and items:
         selected_key = items[0]["key"]
@@ -2412,6 +2434,7 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
         shortcuts = ["↑↓ 카드 · ←→ 버튼", "Enter · r · q"]
     else:
         shortcuts = ["↑↓ 카드 이동 · ←→ 버튼 이동", "Enter 실행 · r 갱신 · q 닫기"]
+    shortcuts[0] = "t UTC/KST · " + shortcuts[0]
     header_border = (186, 170, 214)
     header = [
         banner("AI USAGE", clock, header_border),
@@ -2445,7 +2468,7 @@ def render_dashboard(snapshot, accounts, visible, selected_key, notice, error, w
             tone = DIM if muted else (MUTED if percent is None else level_color(percent))
             label_tone = DIM if muted else TEXT
             parsed = parse_iso(meter.get("resetsAt")) if meter.get("resetsAt") else None
-            reset = format_utc(parsed, "%m/%d %H:%M UTC") if parsed else " " * 15
+            reset = format_display_time(parsed, "%m/%d %H:%M %Z", zone) if parsed else " " * 15
             if compact:
                 label_text = "  " + pad_width(label, compact_label_width) + "  "
                 value_text = pad_width(value, compact_value_width, "right")
@@ -2898,6 +2921,10 @@ def dashboard():
             }.get(key)
             if direction and keys:
                 selected = move_dashboard_selection(selected, direction, accounts, expanded)
+                continue
+            if key == "t":
+                zone = toggle_display_timezone()
+                notice = "시간대를 " + zone + "로 변경했습니다"
                 continue
             if key == "r":
                 notice = "새로고침 중…"

@@ -84,6 +84,22 @@ class DashboardTests(unittest.TestCase):
         self.environment.stop()
         self.temp.cleanup()
 
+    def test_timezone_defaults_persists_and_converts_reset_dates(self):
+        self.assertEqual(self.m.load_display_timezone(), 'KST')
+        provider = self.m.empty_provider('chatgpt', 'ok')
+        provider['left'] = self.m.meter('5시간', 50, '2026-10-15T18:30:00Z')
+        snapshot = {'fetchedAt': '2026-10-15T18:30:00Z', 'providers': [provider]}
+        for zone, reset in [('KST', '10/16 03:30 KST'), ('UTC', '10/15 18:30 UTC')]:
+            self.assertEqual(self.m.load_display_timezone(), zone)
+            self.assertIn(reset, self.m.statusbar_frame(snapshot, 180))
+            frame, _ = self.m.render_dashboard(snapshot, [], set(self.m.ORDER), ('toggle', 'cursor'), None, False, 96, 40, set())
+            self.assertIn(reset, frame)
+            self.assertIn('t UTC/KST', frame)
+            self.m.toggle_display_timezone()
+        self.assertEqual(self.m.load_display_timezone(), 'KST')
+        self.m.save_json(os.path.join(self.m.data_dir(), 'settings.json'), {'timezone': 'invalid'})
+        self.assertEqual(self.m.load_display_timezone(), 'KST')
+
     def test_navigation_without_accounts_and_all_buttons(self):
         for provider in self.m.ORDER:
             for kind in self.m.ACTION_KINDS:
@@ -228,6 +244,9 @@ class DashboardTests(unittest.TestCase):
             wait_for(lambda: any(row[0] == name for row in events()))
         try:
             wait_for(lambda: b'AI USAGE' in output)
+            send(b't')
+            wait_for(lambda: '시간대를 UTC로 변경했습니다'.encode() in output)
+            self.assertEqual(json.loads((child_dir / 'Library/Application Support/AIUsage/settings.json').read_text())['timezone'], 'UTC')
             # Empty provider cards are navigable before any account is saved.
             send(b'\x1b[B\x1b[A\x1b[C\r')
             event('capture')

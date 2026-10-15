@@ -41,6 +41,7 @@ The dashboard uses the same controls on Windows, macOS, and Linux:
 - Left/Right (or `h`/`l`): select visibility, save, logout, or account-list buttons.
 - Enter or Space: execute the selected action or apply a saved account.
 - `d`: remove the selected saved account after confirmation.
+- `t`: switch between KST (default) and UTC. The choice is saved and applies to dashboard times and status-pane reset times.
 - `r`: refresh usage. `q`, Escape, or Ctrl+C: close the dashboard.
 
 Buttons remain selectable even when no accounts have been saved. Session removal requires confirmation. The Mac upgrade preserves existing snapshots, imports Swift saved-account credentials with a backup, and carries over provider visibility. Old accounts that only contain access tokens may need to be saved again to obtain the full login bundle for switching accounts.
