@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Shared dashboard regressions. All credentials and session writes are fixtures."""
 import importlib.util
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 import urllib.request  # Load platform-specific stdlib code before mocking sys.platform.
 from unittest.mock import patch
@@ -28,6 +30,9 @@ def module():
 class Fixture:
     def __init__(self, directory):
         self.m = module()
+        # macOS fixtures must also emulate POSIX branches on a Windows host,
+        # without changing the host os module used by pathlib/tempfile.
+        self.m.os = SimpleNamespace(**dict(vars(os), name='posix'))
         self.directory = Path(directory)
         self.m.home = lambda: str(self.directory)
         self.keychain = {}
@@ -52,7 +57,7 @@ class Fixture:
         self.m.refresh = refresh
         path = self.m.cursor_db_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             conn.execute('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)')
             conn.executemany('INSERT INTO ItemTable VALUES (?, ?)', [
                 ('cursorAuth/accessToken', 'fixture-cursor-token'),
@@ -163,7 +168,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_mac_paths_and_swift_data_migration_are_preserved(self):
         self.assertEqual(self.m.data_dir(), str(self.f.directory / 'Library/Application Support/AIUsage'))
-        self.assertIn('Library/Application Support/Cursor/', self.m.cursor_db_path())
+        self.assertIn('Library/Application Support/Cursor/', self.m.cursor_db_path().replace('\\', '/'))
         original = {'accounts': [{'id': 'swift-id', 'provider': 'chatgpt', 'displayName': 'saved', 'isActive': True}]}
         self.m.save_json(self.m.accounts_path(), original)
         self.m.save_json(os.path.join(self.m.data_dir(), 'credentials.json'), {'credentials': {'swift-id': {'accessToken': 'fixture-secret', 'accountID': 'id'}}})
@@ -177,15 +182,16 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(account['oauthToken'], 'fixture-secret')
         self.assertEqual(self.m.load_json(self.m.accounts_path() + '.swift-backup', None), original)
         self.assertEqual(self.m.load_visible(), [])
-        self.assertEqual(os.stat(self.m.accounts_path()).st_mode & 0o777, 0o600)
+        if os.name != 'nt':
+            self.assertEqual(os.stat(self.m.accounts_path()).st_mode & 0o777, 0o600)
 
     def test_linux_and_windows_paths_remain_separate(self):
         with patch.object(sys, 'platform', 'linux'), patch.dict(os.environ, {'XDG_DATA_HOME': str(self.f.directory / 'data'), 'XDG_CONFIG_HOME': str(self.f.directory / 'config')}):
             self.assertEqual(self.m.data_dir(), str(self.f.directory / 'data/AIUsage'))
-            self.assertIn('/config/Cursor/', self.m.cursor_db_path())
+            self.assertIn('/config/Cursor/', self.m.cursor_db_path().replace('\\', '/'))
         with patch.object(sys, 'platform', 'win32'), patch.dict(os.environ, {'APPDATA': str(self.f.directory / 'appdata')}):
             self.assertEqual(self.m.data_dir(), str(self.f.directory / 'appdata/AIUsage'))
-            self.assertIn('/appdata/Cursor/', self.m.cursor_db_path())
+            self.assertIn('/appdata/Cursor/', self.m.cursor_db_path().replace('\\', '/'))
 
     def test_claude_keychain_precedence_and_failure(self):
         key = (self.m.claude_keychain_service(), self.m.claude_keychain_account())
