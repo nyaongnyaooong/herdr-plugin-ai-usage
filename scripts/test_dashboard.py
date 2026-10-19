@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.request  # Load platform-specific stdlib code before mocking sys.platform.
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -276,6 +277,8 @@ class DashboardTests(unittest.TestCase):
 
 
 def pty_child(directory):
+    # Match the parent's macOS fixture paths on Linux hosts too.
+    sys.platform = 'darwin'
     os.environ['HOME'] = directory
     for name in ('CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR'):
         os.environ.pop(name, None)
